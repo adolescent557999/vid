@@ -15,7 +15,7 @@ const ALLOWED_DOMAINS: string[] = [
 
 // Set to true to ENFORCE domain restrictions
 // Set to false to ALLOW ALL domains (development mode)
-const ENFORCE_DOMAIN_CHECK = ENFORCE;
+const ENFORCE_DOMAIN_CHECK = false;
 
 function getParams(): Record<string, string> {
   const params = new URLSearchParams(window.location.search);
