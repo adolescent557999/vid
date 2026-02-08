@@ -1,36 +1,83 @@
-import { useState, useEffect } from "react";
-import { Player } from "./Player";
-import { ConfigPage } from "./ConfigPage";
+import { useState, useMemo } from "react";
+import { Player } from "./components/Player";
+import { ConfigPage } from "./components/ConfigPage";
+import { DomainBlock } from "./components/DomainBlock";
+
+// ═══════════════════════════════════════════════════════════════
+// DOMAIN WHITELIST — Only these domains can embed and play video
+// Add your allowed domains here (without protocol)
+// ═══════════════════════════════════════════════════════════════
+const ALLOWED_DOMAINS: string[] = [
+  "7777777777777777777564.blogspot.com",
+  "vid-black.vercel.app",
+  // Add your Blogger domain:
+  // "yourblog.blogspot.com",
+  // "www.yourblog.com",
+  // Add any other allowed domains:
+  // "example.com",
+  // "www.example.com",
+];
+
+// Set to true to ENFORCE domain restrictions
+// Set to false to ALLOW ALL domains (development mode)
+const ENFORCE_DOMAIN_CHECK = false;
 
 function getParams(): Record<string, string> {
   const params = new URLSearchParams(window.location.search);
   const result: Record<string, string> = {};
-  params.forEach((v, k) => {
-    result[k] = v;
-  });
+  params.forEach((v, k) => { result[k] = v; });
   return result;
+}
+
+function isDomainAllowed(): { allowed: boolean; domain: string } {
+  // If not enforcing, allow all
+  if (!ENFORCE_DOMAIN_CHECK) return { allowed: true, domain: "" };
+
+  // Check if loaded in iframe
+  const isIframe = window.self !== window.top;
+  
+  if (!isIframe) {
+    // Direct access — check current domain
+    const currentHost = window.location.hostname;
+    const allowed = ALLOWED_DOMAINS.some(
+      (d) => currentHost === d || currentHost.endsWith(`.${d}`)
+    );
+    return { allowed, domain: currentHost };
+  }
+
+  // In iframe — check referrer
+  try {
+    const referrer = document.referrer;
+    if (!referrer) return { allowed: false, domain: "unknown" };
+    const url = new URL(referrer);
+    const parentHost = url.hostname;
+    const allowed = ALLOWED_DOMAINS.some(
+      (d) => parentHost === d || parentHost.endsWith(`.${d}`)
+    );
+    return { allowed, domain: parentHost };
+  } catch {
+    return { allowed: false, domain: "unknown" };
+  }
 }
 
 export function App() {
   const [params] = useState(getParams);
-
-  // Check if we're in embed/player mode (has 'v' or 'id' parameter)
+  
   const playbackId = params.v || params.id || params.playback_id || "";
   const isEmbedMode = !!playbackId;
 
-  // Player config from URL params
-  const accentColor = params.color || params.accent || "#6366f1";
+  const domainCheck = useMemo(() => isDomainAllowed(), []);
+
+  const accentColor = params.color || params.accent || "#8b5cf6";
   const title = params.title || "";
   const autoplay = params.autoplay === "1" || params.autoplay === "true";
-  const posterTime = parseInt(params.poster || "10", 10);
+  const posterTime = parseInt(params.poster || "5", 10);
   const loop = params.loop === "1" || params.loop === "true";
 
-  // Notify parent iframe of readiness
-  useEffect(() => {
-    if (isEmbedMode && window.parent !== window) {
-      window.parent.postMessage({ type: "streamvault-ready" }, "*");
-    }
-  }, [isEmbedMode]);
+  // Domain blocked
+  if (isEmbedMode && !domainCheck.allowed) {
+    return <DomainBlock domain={domainCheck.domain} />;
+  }
 
   if (isEmbedMode) {
     return (
@@ -45,5 +92,5 @@ export function App() {
     );
   }
 
-  return <ConfigPage />;
+  return <ConfigPage allowedDomains={ALLOWED_DOMAINS} enforcing={ENFORCE_DOMAIN_CHECK} />;
 }
