@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 
-const DEFAULT_ID = "LGAf9w4FW2bkiMhgcjPAV4qhGEaCisxMbPVM8IJevkE";
+const DEFAULT_ID = "playbackId12345";
 
 interface ConfigPageProps {
   allowedDomains: string[];
@@ -79,16 +79,11 @@ export function ConfigPage({ allowedDomains, enforcing }: ConfigPageProps) {
               </svg>
             </div>
             <div>
-              <h1 className="text-base font-bold tracking-tight">CineStream</h1>
-              <p className="text-[9px] tracking-[0.25em] uppercase text-white/30 font-semibold">Embed Studio</p>
+              <h1 className="text-base font-bold tracking-tight">Stream</h1>
+              <p className="text-[9px] tracking-[0.25em] uppercase text-white/30 font-semibold">Studio</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <div className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium ${enforcing ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400" : "bg-amber-500/10 border border-amber-500/20 text-amber-400"}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${enforcing ? "bg-emerald-400" : "bg-amber-400"} animate-pulse`} />
-              {enforcing ? "Domain Guard Active" : "Open Access Mode"}
-            </div>
-          </div>
+
         </div>
       </header>
 
@@ -257,201 +252,6 @@ export function ConfigPage({ allowedDomains, enforcing }: ConfigPageProps) {
                 />
               </div>
             </div>
-
-            {/* Embed Code Tabs */}
-            <div className="bg-white/[0.02] border border-white/[0.07] rounded-2xl overflow-hidden">
-              <div className="flex border-b border-white/[0.06] overflow-x-auto">
-                {[
-                  { key: "iframe" as const, label: "iframe", icon: "🌐" },
-                  { key: "blogger" as const, label: "Blogger", icon: "📝" },
-                  { key: "params" as const, label: "Parameters", icon: "⚙️" },
-                  { key: "security" as const, label: "Security", icon: "🔒" },
-                ].map((tab) => (
-                  <button
-                    key={tab.key}
-                    onClick={() => setActiveTab(tab.key)}
-                    className={`flex items-center gap-1.5 px-4 sm:px-5 py-3 text-xs sm:text-[13px] font-medium transition-all relative whitespace-nowrap ${activeTab === tab.key ? "text-white bg-white/[0.03]" : "text-white/35 hover:text-white/55"}`}
-                  >
-                    <span>{tab.icon}</span>
-                    <span>{tab.label}</span>
-                    {activeTab === tab.key && <div className="absolute bottom-0 left-0 right-0 h-[2px]" style={{ background: accentColor }} />}
-                  </button>
-                ))}
-              </div>
-
-              <div className="p-4 sm:p-5">
-                {(activeTab === "iframe" || activeTab === "blogger") && (
-                  <div>
-                    <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                      <div>
-                        <h3 className="text-sm font-semibold">
-                          {activeTab === "iframe" ? "Universal Embed" : "Blogger Embed"}
-                        </h3>
-                        <p className="text-[11px] text-white/30 mt-0.5">
-                          {activeTab === "iframe" ? "Works on any website" : "Paste in Blogger → HTML view"}
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => copy(embedCode(activeTab), activeTab)}
-                        className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold transition-all hover:opacity-90"
-                        style={{ background: `${accentColor}20`, color: accentColor, border: `1px solid ${accentColor}30` }}
-                      >
-                        {copied === activeTab ? "✓ Copied!" : "📋 Copy Code"}
-                      </button>
-                    </div>
-                    <pre className="bg-black/40 border border-white/[0.07] rounded-xl p-4 overflow-x-auto text-[11px] sm:text-xs text-emerald-400/80 font-mono leading-relaxed whitespace-pre-wrap break-all">
-                      {embedCode(activeTab)}
-                    </pre>
-
-                    {activeTab === "blogger" && (
-                      <div className="mt-4 p-4 rounded-xl border" style={{ background: `${accentColor}06`, borderColor: `${accentColor}15` }}>
-                        <h4 className="text-xs font-semibold mb-2 flex items-center gap-1.5" style={{ color: accentColor }}>
-                          📋 Blogger Steps
-                        </h4>
-                        <ol className="text-[11px] text-white/45 space-y-1.5 list-decimal list-inside leading-relaxed">
-                          <li>Open Blogger post editor</li>
-                          <li>Switch to <strong className="text-white/60">HTML view</strong> (click <code className="px-1 rounded text-[10px]" style={{ background: `${accentColor}15`, color: accentColor }}>&lt;/&gt;</code>)</li>
-                          <li>Paste the code where you want the player</li>
-                          <li>Switch back to Compose view to verify</li>
-                          <li>Publish — the player will be live!</li>
-                        </ol>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {activeTab === "params" && (
-                  <div>
-                    <h3 className="text-sm font-semibold mb-1">URL Parameters</h3>
-                    <p className="text-[11px] text-white/30 mb-4">
-                      Append these to your player URL: <code className="font-mono px-1 rounded text-[10px]" style={{ background: `${accentColor}15`, color: accentColor }}>{baseUrl}?v=ID&amp;color=#8b5cf6</code>
-                    </p>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-xs">
-                        <thead>
-                          <tr className="border-b border-white/[0.08]">
-                            <th className="text-left py-2.5 px-3 text-white/40 font-medium">Param</th>
-                            <th className="text-left py-2.5 px-3 text-white/40 font-medium">Type</th>
-                            <th className="text-left py-2.5 px-3 text-white/40 font-medium">Default</th>
-                            <th className="text-left py-2.5 px-3 text-white/40 font-medium">Description</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-white/[0.05]">
-                          {[
-                            { p: "v", t: "string", d: "—", desc: "Mux Playback ID (required). Aliases: id, playback_id" },
-                            { p: "color", t: "hex", d: "#8b5cf6", desc: "Accent color for controls. Alias: accent" },
-                            { p: "title", t: "string", d: "(none)", desc: "Video title in top-left overlay" },
-                            { p: "autoplay", t: "1 | true", d: "false", desc: "Autoplay video (muted per browser policy)" },
-                            { p: "poster", t: "number", d: "5", desc: "Poster thumbnail time in seconds" },
-                            { p: "loop", t: "1 | true", d: "false", desc: "Loop video on end" },
-                          ].map((r) => (
-                            <tr key={r.p} className="hover:bg-white/[0.02]">
-                              <td className="py-2.5 px-3 font-mono" style={{ color: accentColor }}>{r.p}</td>
-                              <td className="py-2.5 px-3 text-white/40">{r.t}</td>
-                              <td className="py-2.5 px-3 text-white/30 font-mono">{r.d}</td>
-                              <td className="py-2.5 px-3 text-white/50">{r.desc}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {activeTab === "security" && (
-                  <div>
-                    <h3 className="text-sm font-semibold mb-1 flex items-center gap-2">
-                      🔒 Domain Guard
-                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${enforcing ? "bg-emerald-500/15 text-emerald-400" : "bg-amber-500/15 text-amber-400"}`}>
-                        {enforcing ? "ACTIVE" : "DISABLED"}
-                      </span>
-                    </h3>
-                    <p className="text-[11px] text-white/30 mb-4">
-                      Restrict which domains can embed and play your videos.
-                    </p>
-
-                    <div className="bg-black/30 border border-white/[0.07] rounded-xl p-4 mb-4">
-                      <h4 className="text-xs font-semibold text-white/60 mb-3">Current Allowed Domains</h4>
-                      {allowedDomains.length > 0 ? (
-                        <div className="flex flex-wrap gap-2">
-                          {allowedDomains.map((d) => (
-                            <span key={d} className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/15 text-emerald-400 text-[11px] font-mono font-medium">
-                              {d}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-xs text-white/30 italic">No domains configured</p>
-                      )}
-                    </div>
-
-                    <div className="bg-black/30 border border-white/[0.07] rounded-xl p-4">
-                      <h4 className="text-xs font-semibold text-white/60 mb-2">How to Configure</h4>
-                      <p className="text-[11px] text-white/35 leading-relaxed mb-3">
-                        Edit <code className="font-mono px-1 rounded bg-white/5 text-white/50">src/App.tsx</code> and modify these values:
-                      </p>
-                      <pre className="bg-[#0a0a12] border border-white/[0.06] rounded-lg p-3 text-[11px] font-mono leading-relaxed overflow-x-auto">
-                        <span className="text-blue-400">{"const"}</span> <span className="text-white">ALLOWED_DOMAINS</span> <span className="text-white/40">=</span> <span className="text-amber-300">[</span>{"\n"}
-                        {"  "}<span className="text-emerald-400">{'"yourblog.blogspot.com"'}</span><span className="text-white/40">,</span>{"\n"}
-                        {"  "}<span className="text-emerald-400">{'"www.yourcustomdomain.com"'}</span><span className="text-white/40">,</span>{"\n"}
-                        <span className="text-amber-300">]</span><span className="text-white/40">;</span>{"\n\n"}
-                        <span className="text-blue-400">{"const"}</span> <span className="text-white">ENFORCE_DOMAIN_CHECK</span> <span className="text-white/40">=</span> <span className="text-amber-300">true</span><span className="text-white/40">;</span>
-                      </pre>
-                    </div>
-
-                    <div className="mt-4 p-4 rounded-xl bg-amber-500/[0.06] border border-amber-500/15">
-                      <h4 className="text-xs font-semibold text-amber-400 mb-2">⚠️ Important Notes</h4>
-                      <ul className="text-[11px] text-white/40 space-y-1.5 list-disc list-inside leading-relaxed">
-                        <li>Domain check uses <code className="text-white/50 bg-white/5 px-1 rounded text-[10px]">document.referrer</code> for iframe embeds</li>
-                        <li>Subdomains are automatically allowed (e.g. adding <code className="text-white/50 bg-white/5 px-1 rounded text-[10px]">example.com</code> also allows <code className="text-white/50 bg-white/5 px-1 rounded text-[10px]">blog.example.com</code>)</li>
-                        <li>Blocked domains see a security message instead of the player</li>
-                        <li>Set <code className="text-white/50 bg-white/5 px-1 rounded text-[10px]">ENFORCE_DOMAIN_CHECK = true</code> in production</li>
-                      </ul>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Features Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {[
-                { icon: "🎬", title: "HLS Adaptive", desc: "Auto quality switching based on network speed" },
-                { icon: "🖼️", title: "Storyboard Scrub", desc: "Sprite-sheet previews — 1 request, zero latency on hover" },
-                { icon: "🔒", title: "Domain Guard", desc: "Restrict playback to your authorized domains" },
-                { icon: "📱", title: "Mobile Ready", desc: "Touch gestures, double-tap seek, responsive UI" },
-                { icon: "⌨️", title: "Keyboard Nav", desc: "Space, K, F, M, arrows — full keyboard control" },
-                { icon: "⚡", title: "Optimized", desc: "Storyboard preload, zero hover requests, minimal bandwidth" },
-              ].map((f) => (
-                <div key={f.title} className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-4 hover:bg-white/[0.04] hover:border-white/[0.1] transition-all duration-300 group">
-                  <div className="text-xl mb-2 group-hover:scale-110 transition-transform duration-300 inline-block">{f.icon}</div>
-                  <h3 className="text-[13px] font-semibold text-white/80 mb-0.5">{f.title}</h3>
-                  <p className="text-[11px] text-white/30 leading-relaxed">{f.desc}</p>
-                </div>
-              ))}
-            </div>
-
-            {/* Keyboard shortcuts */}
-            <div className="bg-white/[0.02] border border-white/[0.06] rounded-2xl p-5">
-              <h3 className="text-sm font-semibold text-white/80 mb-4">⌨️ Keyboard Shortcuts</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                {[
-                  { key: "Space / K", act: "Play/Pause" },
-                  { key: "F", act: "Fullscreen" },
-                  { key: "M", act: "Mute" },
-                  { key: "←", act: "−10 sec" },
-                  { key: "→", act: "+10 sec" },
-                  { key: "↑ / ↓", act: "Volume" },
-                ].map((s) => (
-                  <div key={s.key} className="text-center">
-                    <kbd className="inline-block px-3 py-1.5 rounded-lg text-[11px] font-mono font-semibold text-white/60 border transition-colors" style={{ background: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.08)" }}>
-                      {s.key}
-                    </kbd>
-                    <p className="text-[10px] text-white/30 mt-1.5">{s.act}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
           </div>
         </div>
       </main>
@@ -459,8 +259,8 @@ export function ConfigPage({ allowedDomains, enforcing }: ConfigPageProps) {
       {/* Footer */}
       <footer className="relative z-10 border-t border-white/[0.05] mt-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <p className="text-[11px] text-white/20">CineStream — Ultra-Pro Embeddable Video Player</p>
-          <p className="text-[11px] text-white/15">Mux HLS • Domain Protected • Zero Config</p>
+          <p className="text-[11px] text-white/20">Stream — Video Player</p>
+          <p className="text-[11px] text-white/15"> • Domain Protected </p>
         </div>
       </footer>
 
