@@ -9,18 +9,13 @@ import { DomainBlock } from "./components/DomainBlock";
 // ═══════════════════════════════════════════════════════════════
 const ALLOWED_DOMAINS: string[] = [
   "7777777777777777777564.blogspot.com",
-  "vid-black.vercel.app",
-  // Add your Blogger domain:
-  // "yourblog.blogspot.com",
-  // "www.yourblog.com",
-  // Add any other allowed domains:
   // "example.com",
   // "www.example.com",
 ];
 
 // Set to true to ENFORCE domain restrictions
 // Set to false to ALLOW ALL domains (development mode)
-const ENFORCE_DOMAIN_CHECK = false;
+const ENFORCE_DOMAIN_CHECK = ENFORCE;
 
 function getParams(): Record<string, string> {
   const params = new URLSearchParams(window.location.search);
