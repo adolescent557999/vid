@@ -9,13 +9,14 @@ import { DomainBlock } from "./components/DomainBlock";
 // ═══════════════════════════════════════════════════════════════
 const ALLOWED_DOMAINS: string[] = [
   "7777777777777777777564.blogspot.com",
+  "vid-black.vercel.app",
   // "example.com",
   // "www.example.com",
 ];
 
 // Set to true to ENFORCE domain restrictions
 // Set to false to ALLOW ALL domains (development mode)
-const ENFORCE_DOMAIN_CHECK = false;
+const ENFORCE_DOMAIN_CHECK = ENFORCE;
 
 function getParams(): Record<string, string> {
   const params = new URLSearchParams(window.location.search);
@@ -63,7 +64,7 @@ export function App() {
 
   const domainCheck = useMemo(() => isDomainAllowed(), []);
 
-  const accentColor = params.color || params.accent || "#8b5cf6";
+  const accentColor = params.color || params.accent || "#ec4899";
   const title = params.title || "";
   const autoplay = params.autoplay === "1" || params.autoplay === "true";
   const posterTime = parseInt(params.poster || "5", 10);
