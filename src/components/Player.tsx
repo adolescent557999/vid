@@ -111,70 +111,91 @@ export function Player({
   const volTrackRef = useRef<HTMLDivElement>(null);
 
   // ══════════════════════════════════════════════════════════════
-  // SMART POPUNDER AD ENGINE
-  // Rules:
-  //  • Fires at most ONCE per video per browser session
-  //  • Only triggers on a real user gesture (play/pause click)
-  //  • Only eligible after user has watched ≥40% of the video
-  //  • Waits for a natural "pause" moment (user pressed pause), OR
-  //    triggers on the FIRST play-click that happens after 40%
-  //  • Never fires if user is in fullscreen (bad UX → high bounce)
-  //  • Session key prevents re-fire on tab refresh
+  // AD ENGINE
+  // Banner:   injected at 50% watch progress, shown once per video
+  // Popunder: fires on any click anywhere after banner is visible,
+  //           once per video per session
   // ══════════════════════════════════════════════════════════════
-  const adFiredRef = useRef<boolean>(false);
-  const watchProgressRef = useRef<number>(0); // 0–1 fraction watched
-  const pendingAdRef = useRef<boolean>(false); // queued for next gesture
+  const AD_BANNER_ID  = "container-fe929c131758acd1e3848b9b1a8ce2a4";
+  const AD_SCRIPT_SRC = "https://progressmagnify.com/fe929c131758acd1e3848b9b1a8ce2a4/invoke.js";
 
-  const AD_SCRIPT_URL = "https://progressmagnify.com/0c/a6/09/0ca609254fae20778c123caba76895fd.js";
-  // Session key: one fire per video per browser session
-  const AD_SESSION_KEY = `ad_fired_${playbackId}`;
+  const bannerShownRef   = useRef<boolean>(false); // banner injected?
+  const popunderFiredRef = useRef<boolean>(false); // popunder fired?
+  const watchMaxRef      = useRef<number>(0);       // furthest fraction watched
 
-  // Check session storage once on mount
+  const [showBanner, setShowBanner] = useState<boolean>(false);
+
+  // ── Per-video session keys ──
+  const BANNER_KEY   = `ad_banner_${playbackId}`;
+  const POPUNDER_KEY = `ad_popunder_${playbackId}`;
+
+  // ── Reset on every new video ──
   useEffect(() => {
+    bannerShownRef.current   = false;
+    popunderFiredRef.current = false;
+    watchMaxRef.current      = 0;
+    setShowBanner(false);
     try {
-      if (sessionStorage.getItem(AD_SESSION_KEY) === "1") {
-        adFiredRef.current = true;
-      }
+      if (sessionStorage.getItem(BANNER_KEY)   === "1") bannerShownRef.current   = true;
+      if (sessionStorage.getItem(POPUNDER_KEY) === "1") popunderFiredRef.current = true;
     } catch (_) {}
-  }, [AD_SESSION_KEY]);
+  }, [playbackId, BANNER_KEY, POPUNDER_KEY]);
 
-  const firePopunderAd = useCallback(() => {
-    if (adFiredRef.current) return;
-    // Don't fire in fullscreen — user is deeply engaged, interruption = bad
-    if (document.fullscreenElement) {
-      pendingAdRef.current = true; // defer until they exit fullscreen
-      return;
-    }
-    adFiredRef.current = true;
-    pendingAdRef.current = false;
-    try {
-      sessionStorage.setItem(AD_SESSION_KEY, "1");
-    } catch (_) {}
+  // ── Inject banner ad script into the container div ──
+  const injectBanner = useCallback(() => {
+    if (bannerShownRef.current) return;
+    bannerShownRef.current = true;
+    try { sessionStorage.setItem(BANNER_KEY, "1"); } catch (_) {}
+    setShowBanner(true);
+    // Inject the invoke.js script into the banner container after React renders it
+    setTimeout(() => {
+      const container = document.getElementById(AD_BANNER_ID);
+      if (!container) return;
+      // Avoid double-injection
+      if (container.querySelector("script")) return;
+      const s = document.createElement("script");
+      s.src   = AD_SCRIPT_SRC;
+      s.async = true;
+      s.setAttribute("data-cfasync", "false");
+      container.appendChild(s);
+    }, 100);
+  }, [BANNER_KEY]);
 
+  // ── Fire popunder on any click when banner is visible ──
+  const firePopunder = useCallback(() => {
+    if (popunderFiredRef.current) return;
+    if (document.fullscreenElement) return; // never in fullscreen
+    popunderFiredRef.current = true;
+    try { sessionStorage.setItem(POPUNDER_KEY, "1"); } catch (_) {}
     try {
-      // Open the ad script URL directly as the tab URL — avoids about:blank + document.write
-      // which is blocked by browsers due to cross-origin script injection restrictions
-      const adWin = window.open(AD_SCRIPT_URL, "_blank");
+      const adWin = window.open(AD_SCRIPT_SRC, "_blank");
       if (adWin) {
-        // Bring current window back to foreground immediately (popunder effect)
         window.focus();
-        setTimeout(() => {
-          try { adWin.blur(); window.focus(); } catch (_) {}
-        }, 0);
+        setTimeout(() => { try { adWin.blur(); window.focus(); } catch (_) {} }, 0);
       }
     } catch (_) {}
-  }, [AD_SESSION_KEY]);
+  }, [POPUNDER_KEY]);
 
-  // Fire deferred ad when user exits fullscreen
+  // ── Attach / detach click listener for popunder once banner is shown ──
+  useEffect(() => {
+    if (!showBanner) return;
+    const handler = () => firePopunder();
+    document.addEventListener("click", handler, { once: true });
+    return () => document.removeEventListener("click", handler);
+  }, [showBanner, firePopunder]);
+
+  // ── Defer popunder if fullscreen is exited after banner shown ──
   useEffect(() => {
     const onFsChange = () => {
-      if (!document.fullscreenElement && pendingAdRef.current) {
-        firePopunderAd();
+      if (!document.fullscreenElement && showBanner && !popunderFiredRef.current) {
+        // Re-attach click listener after fullscreen exit
+        const handler = () => firePopunder();
+        document.addEventListener("click", handler, { once: true });
       }
     };
     document.addEventListener("fullscreenchange", onFsChange);
     return () => document.removeEventListener("fullscreenchange", onFsChange);
-  }, [firePopunderAd]);
+  }, [showBanner, firePopunder]);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
@@ -406,15 +427,13 @@ export function Player({
     const handlers: [string, EventListener][] = [
       ["timeupdate", () => {
         setCurrentTime(v.currentTime);
-        // Track furthest watch fraction (not just current time, scrubbing doesn't cheat it)
         if (v.duration > 0) {
           const frac = v.currentTime / v.duration;
-          if (frac > watchProgressRef.current) {
-            watchProgressRef.current = frac;
-          }
-          // Auto-queue ad once user has organically watched ≥40%
-          if (!adFiredRef.current && !pendingAdRef.current && frac >= 0.40) {
-            pendingAdRef.current = true;
+          // Track furthest point actually watched (scrubbing forward doesn't count)
+          if (frac > watchMaxRef.current) watchMaxRef.current = frac;
+          // Inject banner once user has organically reached 50%
+          if (!bannerShownRef.current && watchMaxRef.current >= 0.50) {
+            injectBanner();
           }
         }
       }],
@@ -531,11 +550,6 @@ export function Player({
   const togglePlay = () => {
     const v = videoRef.current;
     if (!v) return;
-    // Fire the queued ad on the next natural play/pause interaction
-    // after user has watched ≥40% — feels like a natural pause moment
-    if (pendingAdRef.current && !adFiredRef.current) {
-      firePopunderAd();
-    }
     v.paused ? v.play() : v.pause();
     resetHideTimer();
   };
@@ -711,6 +725,16 @@ export function Player({
           <div className="w-[72px] h-[72px] rounded-full bg-white/[0.06] backdrop-blur-2xl border border-white/[0.1] flex items-center justify-center shadow-2xl hover:bg-white/[0.12] hover:scale-110 transition-all duration-300">
             <Icons.replay className="w-7 h-7 text-white" />
           </div>
+        </div>
+      )}
+
+      {/* ── Native Banner Ad — shown once at 50% watch progress ── */}
+      {showBanner && (
+        <div
+          className="absolute bottom-[72px] left-0 right-0 z-40 flex justify-center pointer-events-auto animate-[csFadeIn_0.4s_ease-out]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div id={AD_BANNER_ID} />
         </div>
       )}
 
