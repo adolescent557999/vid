@@ -110,6 +110,76 @@ export function Player({
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const volTrackRef = useRef<HTMLDivElement>(null);
 
+  // ══════════════════════════════════════════════════════════════
+  // SMART POPUNDER AD ENGINE
+  // Rules:
+  //  • Fires at most ONCE per video per browser session
+  //  • Only triggers on a real user gesture (play/pause click)
+  //  • Only eligible after user has watched ≥40% of the video
+  //  • Waits for a natural "pause" moment (user pressed pause), OR
+  //    triggers on the FIRST play-click that happens after 40%
+  //  • Never fires if user is in fullscreen (bad UX → high bounce)
+  //  • Session key prevents re-fire on tab refresh
+  // ══════════════════════════════════════════════════════════════
+  const adFiredRef = useRef<boolean>(false);
+  const watchProgressRef = useRef<number>(0); // 0–1 fraction watched
+  const pendingAdRef = useRef<boolean>(false); // queued for next gesture
+
+  const AD_SCRIPT_URL = "https://progressmagnify.com/0c/a6/09/0ca609254fae20778c123caba76895fd.js";
+  // Session key: one fire per video per browser session
+  const AD_SESSION_KEY = `ad_fired_${playbackId}`;
+
+  // Check session storage once on mount
+  useEffect(() => {
+    try {
+      if (sessionStorage.getItem(AD_SESSION_KEY) === "1") {
+        adFiredRef.current = true;
+      }
+    } catch (_) {}
+  }, [AD_SESSION_KEY]);
+
+  const firePopunderAd = useCallback(() => {
+    if (adFiredRef.current) return;
+    // Don't fire in fullscreen — user is deeply engaged, interruption = bad
+    if (document.fullscreenElement) {
+      pendingAdRef.current = true; // defer until they exit fullscreen
+      return;
+    }
+    adFiredRef.current = true;
+    pendingAdRef.current = false;
+    try {
+      sessionStorage.setItem(AD_SESSION_KEY, "1");
+    } catch (_) {}
+
+    try {
+      // Step 1: Open ad tab in background (popunder)
+      const adWin = window.open("about:blank", "_blank", "noopener");
+      if (adWin) {
+        adWin.document.open();
+        adWin.document.write(
+          `<!DOCTYPE html><html><head><title></title></head><body>` +
+          `<script src="${AD_SCRIPT_URL}"><\/script></body></html>`
+        );
+        adWin.document.close();
+        // Immediately bring current window back to foreground
+        window.focus();
+        // Belt-and-suspenders: blur ad window after a tick
+        setTimeout(() => { try { adWin.blur(); window.focus(); } catch (_) {} }, 0);
+      }
+    } catch (_) {}
+  }, [AD_SESSION_KEY]);
+
+  // Fire deferred ad when user exits fullscreen
+  useEffect(() => {
+    const onFsChange = () => {
+      if (!document.fullscreenElement && pendingAdRef.current) {
+        firePopunderAd();
+      }
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, [firePopunderAd]);
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -249,6 +319,23 @@ export function Player({
     return aspect >= 1 ? 192 : Math.round(128 * aspect);
   }, [hoverTile]);
 
+  // ── Reset ad state on every new video ──
+  // AD_SESSION_KEY is scoped per-video: `ad_fired_${playbackId}`
+  // Each new video gets its own session key → ad fires once per video per session
+  useEffect(() => {
+    // Always reset in-memory flags first
+    adFiredRef.current = false;
+    pendingAdRef.current = false;
+    watchProgressRef.current = 0;
+    // Then check if THIS specific video already had its ad fired this session
+    try {
+      const key = `ad_fired_${playbackId}`;
+      if (sessionStorage.getItem(key) === "1") {
+        adFiredRef.current = true; // already shown for this video — skip
+      }
+    } catch (_) {}
+  }, [playbackId]); // fires fresh on every video switch
+
   // ── Initialize HLS ──
   useEffect(() => {
     const video = videoRef.current;
@@ -321,7 +408,20 @@ export function Player({
     if (!v) return;
 
     const handlers: [string, EventListener][] = [
-      ["timeupdate", () => setCurrentTime(v.currentTime)],
+      ["timeupdate", () => {
+        setCurrentTime(v.currentTime);
+        // Track furthest watch fraction (not just current time, scrubbing doesn't cheat it)
+        if (v.duration > 0) {
+          const frac = v.currentTime / v.duration;
+          if (frac > watchProgressRef.current) {
+            watchProgressRef.current = frac;
+          }
+          // Auto-queue ad once user has organically watched ≥40%
+          if (!adFiredRef.current && !pendingAdRef.current && frac >= 0.40) {
+            pendingAdRef.current = true;
+          }
+        }
+      }],
       ["durationchange", () => setDuration(v.duration)],
       ["play", () => { setIsPlaying(true); setHasStarted(true); }],
       ["pause", () => setIsPlaying(false)],
@@ -435,6 +535,11 @@ export function Player({
   const togglePlay = () => {
     const v = videoRef.current;
     if (!v) return;
+    // Fire the queued ad on the next natural play/pause interaction
+    // after user has watched ≥40% — feels like a natural pause moment
+    if (pendingAdRef.current && !adFiredRef.current) {
+      firePopunderAd();
+    }
     v.paused ? v.play() : v.pause();
     resetHideTimer();
   };
