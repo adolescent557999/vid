@@ -110,93 +110,6 @@ export function Player({
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const volTrackRef = useRef<HTMLDivElement>(null);
 
-  // ══════════════════════════════════════════════════════════════
-  // AD ENGINE
-  // Banner:   injected at 50% watch progress, shown once per video
-  // Popunder: fires on any click anywhere after banner is visible,
-  //           once per video per session
-  // ══════════════════════════════════════════════════════════════
-  const AD_BANNER_ID  = "container-fe929c131758acd1e3848b9b1a8ce2a4";
-  const AD_SCRIPT_SRC = "https://progressmagnify.com/fe929c131758acd1e3848b9b1a8ce2a4/invoke.js";
-
-  const bannerShownRef   = useRef<boolean>(false); // banner injected?
-  const popunderFiredRef = useRef<boolean>(false); // popunder fired?
-  const watchMaxRef      = useRef<number>(0);       // furthest fraction watched
-
-  const [showBanner, setShowBanner] = useState<boolean>(false);
-
-  // ── Per-video session keys ──
-  const BANNER_KEY   = `ad_banner_${playbackId}`;
-  const POPUNDER_KEY = `ad_popunder_${playbackId}`;
-
-  // ── Reset on every new video ──
-  useEffect(() => {
-    bannerShownRef.current   = false;
-    popunderFiredRef.current = false;
-    watchMaxRef.current      = 0;
-    setShowBanner(false);
-    try {
-      if (sessionStorage.getItem(BANNER_KEY)   === "1") bannerShownRef.current   = true;
-      if (sessionStorage.getItem(POPUNDER_KEY) === "1") popunderFiredRef.current = true;
-    } catch (_) {}
-  }, [playbackId, BANNER_KEY, POPUNDER_KEY]);
-
-  // ── Inject banner ad script into the container div ──
-  const injectBanner = useCallback(() => {
-    if (bannerShownRef.current) return;
-    bannerShownRef.current = true;
-    try { sessionStorage.setItem(BANNER_KEY, "1"); } catch (_) {}
-    setShowBanner(true);
-    // Inject the invoke.js script into the banner container after React renders it
-    setTimeout(() => {
-      const container = document.getElementById(AD_BANNER_ID);
-      if (!container) return;
-      // Avoid double-injection
-      if (container.querySelector("script")) return;
-      const s = document.createElement("script");
-      s.src   = AD_SCRIPT_SRC;
-      s.async = true;
-      s.setAttribute("data-cfasync", "false");
-      container.appendChild(s);
-    }, 100);
-  }, [BANNER_KEY]);
-
-  // ── Fire popunder on any click when banner is visible ──
-  const firePopunder = useCallback(() => {
-    if (popunderFiredRef.current) return;
-    if (document.fullscreenElement) return; // never in fullscreen
-    popunderFiredRef.current = true;
-    try { sessionStorage.setItem(POPUNDER_KEY, "1"); } catch (_) {}
-    try {
-      const adWin = window.open(AD_SCRIPT_SRC, "_blank");
-      if (adWin) {
-        window.focus();
-        setTimeout(() => { try { adWin.blur(); window.focus(); } catch (_) {} }, 0);
-      }
-    } catch (_) {}
-  }, [POPUNDER_KEY]);
-
-  // ── Attach / detach click listener for popunder once banner is shown ──
-  useEffect(() => {
-    if (!showBanner) return;
-    const handler = () => firePopunder();
-    document.addEventListener("click", handler, { once: true });
-    return () => document.removeEventListener("click", handler);
-  }, [showBanner, firePopunder]);
-
-  // ── Defer popunder if fullscreen is exited after banner shown ──
-  useEffect(() => {
-    const onFsChange = () => {
-      if (!document.fullscreenElement && showBanner && !popunderFiredRef.current) {
-        // Re-attach click listener after fullscreen exit
-        const handler = () => firePopunder();
-        document.addEventListener("click", handler, { once: true });
-      }
-    };
-    document.addEventListener("fullscreenchange", onFsChange);
-    return () => document.removeEventListener("fullscreenchange", onFsChange);
-  }, [showBanner, firePopunder]);
-
   const [isPlaying, setIsPlaying] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -226,6 +139,84 @@ export function Player({
 
   const videoSrc = `https://stream.mux.com/${playbackId}.m3u8`;
   const posterUrl = `https://image.mux.com/${playbackId}/thumbnail.png?time=${posterTime}`;
+
+  // ══════════════════════════════════════════════════════════════
+  // AD ENGINE — all hooks in correct order, after all useState
+  // Banner:   shown once at 50% watch progress
+  // Popunder: fires on first click anywhere after banner appears
+  // Both:     once per video per browser session (sessionStorage)
+  // ══════════════════════════════════════════════════════════════
+  const AD_BANNER_ID  = "container-fe929c131758acd1e3848b9b1a8ce2a4";
+  const AD_SCRIPT_SRC = "https://progressmagnify.com/fe929c131758acd1e3848b9b1a8ce2a4/invoke.js";
+
+  const bannerShownRef   = useRef<boolean>(false);
+  const popunderFiredRef = useRef<boolean>(false);
+  const watchMaxRef      = useRef<number>(0);
+  const [showBanner, setShowBanner] = useState<boolean>(false);
+
+  // Reset all ad state when playbackId changes (new video)
+  useEffect(() => {
+    bannerShownRef.current   = false;
+    popunderFiredRef.current = false;
+    watchMaxRef.current      = 0;
+    setShowBanner(false);
+    try {
+      if (sessionStorage.getItem(`ad_b_${playbackId}`) === "1") bannerShownRef.current   = true;
+      if (sessionStorage.getItem(`ad_p_${playbackId}`) === "1") popunderFiredRef.current = true;
+    } catch (_) {}
+  }, [playbackId]);
+
+  // Watch progress tracker — separate effect so it never stales
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onTime = () => {
+      if (v.duration <= 0) return;
+      const frac = v.currentTime / v.duration;
+      if (frac > watchMaxRef.current) watchMaxRef.current = frac;
+      // Trigger banner at 50%
+      if (!bannerShownRef.current && watchMaxRef.current >= 0.5) {
+        bannerShownRef.current = true;
+        try { sessionStorage.setItem(`ad_b_${playbackId}`, "1"); } catch (_) {}
+        setShowBanner(true);
+      }
+    };
+    v.addEventListener("timeupdate", onTime);
+    return () => v.removeEventListener("timeupdate", onTime);
+  }, [playbackId]);
+
+  // Inject the banner script into the div once showBanner becomes true
+  useEffect(() => {
+    if (!showBanner) return;
+    const timer = setTimeout(() => {
+      const el = document.getElementById(AD_BANNER_ID);
+      if (!el || el.querySelector("script")) return;
+      const s = document.createElement("script");
+      s.src   = AD_SCRIPT_SRC;
+      s.async = true;
+      s.setAttribute("data-cfasync", "false");
+      el.appendChild(s);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [showBanner]);
+
+  // Attach popunder click listener once banner is visible
+  useEffect(() => {
+    if (!showBanner) return;
+    const fire = () => {
+      if (popunderFiredRef.current) return;
+      if (document.fullscreenElement) return;
+      popunderFiredRef.current = true;
+      try { sessionStorage.setItem(`ad_p_${playbackId}`, "1"); } catch (_) {}
+      try {
+        const w = window.open(AD_SCRIPT_SRC, "_blank");
+        if (w) { window.focus(); setTimeout(() => { try { w.blur(); window.focus(); } catch (_) {} }, 0); }
+      } catch (_) {}
+    };
+    document.addEventListener("click", fire, { once: true });
+    return () => document.removeEventListener("click", fire);
+  }, [showBanner, playbackId]);
+  // ══════════════════════════════════════════════════════════════
 
   // ── Load storyboard VTT + preload sprite images (typically 1-2 requests total) ──
   useEffect(() => {
@@ -336,23 +327,6 @@ export function Player({
     return aspect >= 1 ? 192 : Math.round(128 * aspect);
   }, [hoverTile]);
 
-  // ── Reset ad state on every new video ──
-  // AD_SESSION_KEY is scoped per-video: `ad_fired_${playbackId}`
-  // Each new video gets its own session key → ad fires once per video per session
-  useEffect(() => {
-    // Always reset in-memory flags first
-    adFiredRef.current = false;
-    pendingAdRef.current = false;
-    watchProgressRef.current = 0;
-    // Then check if THIS specific video already had its ad fired this session
-    try {
-      const key = `ad_fired_${playbackId}`;
-      if (sessionStorage.getItem(key) === "1") {
-        adFiredRef.current = true; // already shown for this video — skip
-      }
-    } catch (_) {}
-  }, [playbackId]); // fires fresh on every video switch
-
   // ── Initialize HLS ──
   useEffect(() => {
     const video = videoRef.current;
@@ -425,18 +399,7 @@ export function Player({
     if (!v) return;
 
     const handlers: [string, EventListener][] = [
-      ["timeupdate", () => {
-        setCurrentTime(v.currentTime);
-        if (v.duration > 0) {
-          const frac = v.currentTime / v.duration;
-          // Track furthest point actually watched (scrubbing forward doesn't count)
-          if (frac > watchMaxRef.current) watchMaxRef.current = frac;
-          // Inject banner once user has organically reached 50%
-          if (!bannerShownRef.current && watchMaxRef.current >= 0.50) {
-            injectBanner();
-          }
-        }
-      }],
+      ["timeupdate", () => { setCurrentTime(v.currentTime); }],
       ["durationchange", () => setDuration(v.duration)],
       ["play", () => { setIsPlaying(true); setHasStarted(true); }],
       ["pause", () => setIsPlaying(false)],
