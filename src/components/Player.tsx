@@ -153,6 +153,7 @@ export function Player({
   const popunderFiredRef = useRef<boolean>(false);
   const watchMaxRef      = useRef<number>(0);
   const [showBanner, setShowBanner] = useState<boolean>(false);
+  const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
 
   // Reset all ad state when playbackId changes (new video)
   useEffect(() => {
@@ -160,6 +161,7 @@ export function Player({
     popunderFiredRef.current = false;
     watchMaxRef.current      = 0;
     setShowBanner(false);
+    setBannerDismissed(false);
     try {
       if (sessionStorage.getItem(`ad_b_${playbackId}`) === "1") bannerShownRef.current   = true;
       if (sessionStorage.getItem(`ad_p_${playbackId}`) === "1") popunderFiredRef.current = true;
@@ -691,11 +693,11 @@ export function Player({
         </div>
       )}
 
-      {/* ── Native Banner Ad — shown once at 50% watch progress ── */}
-      {showBanner && (
+      {/* ── Native Banner Ad — shown once at 50%, dismissed on click ── */}
+      {showBanner && !bannerDismissed && (
         <div
           className="absolute bottom-[72px] left-0 right-0 z-40 flex justify-center pointer-events-auto animate-[csFadeIn_0.4s_ease-out]"
-          onClick={(e) => e.stopPropagation()}
+          onClick={() => setBannerDismissed(true)}
         >
           <div id={AD_BANNER_ID} />
         </div>
