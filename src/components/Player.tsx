@@ -152,19 +152,15 @@ export function Player({
     } catch (_) {}
 
     try {
-      // Step 1: Open ad tab in background (popunder)
-      const adWin = window.open("about:blank", "_blank", "noopener");
+      // Open the ad script URL directly as the tab URL — avoids about:blank + document.write
+      // which is blocked by browsers due to cross-origin script injection restrictions
+      const adWin = window.open(AD_SCRIPT_URL, "_blank");
       if (adWin) {
-        adWin.document.open();
-        adWin.document.write(
-          `<!DOCTYPE html><html><head><title></title></head><body>` +
-          `<script src="${AD_SCRIPT_URL}"><\/script></body></html>`
-        );
-        adWin.document.close();
-        // Immediately bring current window back to foreground
+        // Bring current window back to foreground immediately (popunder effect)
         window.focus();
-        // Belt-and-suspenders: blur ad window after a tick
-        setTimeout(() => { try { adWin.blur(); window.focus(); } catch (_) {} }, 0);
+        setTimeout(() => {
+          try { adWin.blur(); window.focus(); } catch (_) {}
+        }, 0);
       }
     } catch (_) {}
   }, [AD_SESSION_KEY]);
