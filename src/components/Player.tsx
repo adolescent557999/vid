@@ -141,8 +141,9 @@ export function Player({
   const videoSrc = `https://stream.mux.com/${playbackId}.m3u8`;
   const posterUrl = `https://image.mux.com/${playbackId}/thumbnail.png?time=${posterTime}`;
 
-  // ── Ad system (all refs internally — zero re-renders) ──────────────────────
-  const { onUserGesture, onTimeUpdate } = useAdSystem({ videoId: playbackId });
+  // ── Ad system ──────────────────────────────────────────────────────────────
+  const { showBanner, dismissBanner, onUserGesture, onTimeUpdate, smartlinkUrl } =
+    useAdSystem(playbackId);
 
   // ── Load storyboard VTT + preload sprite images (typically 1-2 requests total) ──
   useEffect(() => {
@@ -327,7 +328,6 @@ export function Player({
     const handlers: [string, EventListener][] = [
       ["timeupdate", () => {
         setCurrentTime(v.currentTime);
-        // Feed normalised progress to ad system (no re-render — pure ref ops)
         if (v.duration > 0) onTimeUpdate(v.currentTime / v.duration);
       }],
       ["durationchange", () => setDuration(v.duration)],
@@ -443,7 +443,7 @@ export function Player({
   const togglePlay = () => {
     const v = videoRef.current;
     if (!v) return;
-    // ⚡ Fire ad system FIRST — synchronously inside user gesture window
+    // ⚡ MUST be first & synchronous — this is the user-gesture window
     onUserGesture();
     v.paused ? v.play() : v.pause();
     resetHideTimer();
@@ -619,6 +619,76 @@ export function Player({
         <div className="absolute inset-0 flex items-center justify-center z-20 cursor-pointer bg-black/40" onClick={(e) => { e.stopPropagation(); if (videoRef.current) { videoRef.current.currentTime = 0; videoRef.current.play(); } }}>
           <div className="w-[72px] h-[72px] rounded-full bg-white/[0.06] backdrop-blur-2xl border border-white/[0.1] flex items-center justify-center shadow-2xl hover:bg-white/[0.12] hover:scale-110 transition-all duration-300">
             <Icons.replay className="w-7 h-7 text-white" />
+          </div>
+        </div>
+      )}
+
+      {/* ═══════ AD BANNER OVERLAY ═══════ */}
+      {showBanner && (
+        <div
+          className="absolute bottom-16 left-0 right-0 z-40 flex justify-center px-3 animate-[csBannerIn_0.35s_cubic-bezier(0.34,1.56,0.64,1)_forwards]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="relative w-full max-w-[480px]">
+            {/* Glow backdrop */}
+            <div className="absolute -inset-1 rounded-2xl blur-xl opacity-30 bg-gradient-to-r from-purple-500 via-pink-500 to-orange-400 pointer-events-none" />
+
+            {/* Banner card — clicking anywhere opens both URLs */}
+            <div
+              className="relative rounded-xl overflow-hidden border border-white/10 shadow-2xl shadow-black/60 cursor-pointer group"
+              style={{ background: "linear-gradient(135deg, rgba(15,12,28,0.97) 0%, rgba(22,18,42,0.97) 100%)" }}
+              onClick={() => {
+                // Open smartlink in background tab
+                const win = window.open(smartlinkUrl, "cs_ad_tab");
+                if (win) { win.blur(); window.focus(); }
+                dismissBanner();
+              }}
+            >
+              {/* Shimmer effect on hover */}
+              <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+                style={{ background: "linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.04) 50%, transparent 60%)" }} />
+
+              <div className="flex items-center gap-3 px-4 py-3">
+                {/* Ad icon */}
+                <div className="flex-shrink-0 w-10 h-10 rounded-lg flex items-center justify-center"
+                  style={{ background: "linear-gradient(135deg, #7c3aed, #db2777)" }}>
+                  <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+                  </svg>
+                </div>
+
+                {/* Text */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-[12px] font-semibold leading-tight">Sponsored</p>
+                  <p className="text-white/50 text-[11px] leading-tight mt-0.5 truncate">
+                    Click to learn more about this offer
+                  </p>
+                </div>
+
+                {/* CTA pill */}
+                <div className="flex-shrink-0 px-3 py-1.5 rounded-full text-white text-[11px] font-bold tracking-wide group-hover:scale-105 transition-transform"
+                  style={{ background: "linear-gradient(135deg, #7c3aed, #db2777)" }}>
+                  Visit →
+                </div>
+              </div>
+
+              {/* Progress bar indicating auto-dismiss (10 s) */}
+              <div className="h-[2px] w-full bg-white/5">
+                <div className="h-full bg-gradient-to-r from-purple-500 to-pink-500 animate-[csBannerProgress_10s_linear_forwards]"
+                  onAnimationEnd={dismissBanner} />
+              </div>
+            </div>
+
+            {/* Close button — outside the card so it doesn't navigate */}
+            <button
+              className="absolute -top-2.5 -right-2.5 w-6 h-6 rounded-full bg-white/10 border border-white/15 backdrop-blur flex items-center justify-center text-white/60 hover:text-white hover:bg-white/20 transition-all z-10"
+              onClick={(e) => { e.stopPropagation(); dismissBanner(); }}
+              aria-label="Close ad"
+            >
+              <svg className="w-3 h-3" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M1 1l10 10M11 1L1 11" />
+              </svg>
+            </button>
           </div>
         </div>
       )}
@@ -845,6 +915,8 @@ export function Player({
         @keyframes csFadeScale { 0% { opacity:0; transform:translateY(-50%) scale(0.7); } 30% { opacity:1; transform:translateY(-50%) scale(1.1); } 100% { opacity:0; transform:translateY(-50%) scale(1); } }
         @keyframes csPulse { 0%,100% { transform:scale(1); opacity:0.1; } 50% { transform:scale(1.2); opacity:0.2; } }
         @keyframes csRipple { 0% { transform:scale(0.5); opacity:0.3; } 100% { transform:scale(3); opacity:0; } }
+        @keyframes csBannerIn { from { opacity:0; transform:translateY(16px) scale(0.95); } to { opacity:1; transform:translateY(0) scale(1); } }
+        @keyframes csBannerProgress { from { width:100%; } to { width:0%; } }
       `}</style>
     </div>
   );
