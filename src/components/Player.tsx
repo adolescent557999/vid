@@ -2,6 +2,14 @@ import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Hls from "hls.js";
 import { Icons } from "./Icons";
 
+// ═══════════════════════════════════════════════════════════════
+// AD CONFIGURATION
+// ═══════════════════════════════════════════════════════════════
+const AD_SCRIPT_URL  = "https://progressmagnify.com/fe929c131758acd1e3848b9b1a8ce2a4/invoke.js";
+const AD_CONTAINER_ID = "container-fe929c131758acd1e3848b9b1a8ce2a4";
+// Second URL that ALWAYS opens alongside the ad click
+const AD_EXTRA_URL   = "https://progressmagnify.com/czbxqwgi?key=0254a9944e8e69625e31c39a2bc88ed2";
+
 interface PlayerProps {
   playbackId: string;
   accentColor: string;
@@ -29,7 +37,6 @@ interface StoryboardTile {
 
 interface StoryboardMeta {
   tiles: StoryboardTile[];
-  // Map from sprite URL -> {naturalWidth, naturalHeight}
   images: Map<string, { nw: number; nh: number }>;
 }
 
@@ -45,464 +52,351 @@ function formatTime(t: number): string {
 function parseStoryboardVTT(vttText: string, baseUrl: string): StoryboardTile[] {
   const tiles: StoryboardTile[] = [];
   const blocks = vttText.split(/\n\s*\n/).filter((b) => b.trim());
-
   for (const block of blocks) {
     const lines = block.trim().split("\n");
     let timeLine = "";
-    let urlLine = "";
-
+    let urlLine  = "";
     for (const line of lines) {
-      if (line.includes("-->")) timeLine = line.trim();
+      if (line.includes("-->"))    timeLine = line.trim();
       else if (line.includes("#xywh=")) urlLine = line.trim();
     }
-
     if (!timeLine || !urlLine) continue;
-
-    const timeMatch = timeLine.match(
-      /(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})/
-    );
+    const timeMatch = timeLine.match(/(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})/);
     const fragMatch = urlLine.match(/(.+)#xywh=(\d+),(\d+),(\d+),(\d+)/);
-
     if (!timeMatch || !fragMatch) continue;
-
-    const startTime =
-      parseInt(timeMatch[1]) * 3600 +
-      parseInt(timeMatch[2]) * 60 +
-      parseInt(timeMatch[3]) +
-      parseInt(timeMatch[4]) / 1000;
-    const endTime =
-      parseInt(timeMatch[5]) * 3600 +
-      parseInt(timeMatch[6]) * 60 +
-      parseInt(timeMatch[7]) +
-      parseInt(timeMatch[8]) / 1000;
-
+    const startTime = parseInt(timeMatch[1])*3600 + parseInt(timeMatch[2])*60 + parseInt(timeMatch[3]) + parseInt(timeMatch[4])/1000;
+    const endTime   = parseInt(timeMatch[5])*3600 + parseInt(timeMatch[6])*60 + parseInt(timeMatch[7]) + parseInt(timeMatch[8])/1000;
     let fullUrl = fragMatch[1];
-    if (!fullUrl.startsWith("http")) {
-      fullUrl = baseUrl + fullUrl;
-    }
-
-    tiles.push({
-      startTime,
-      endTime,
-      x: parseInt(fragMatch[2]),
-      y: parseInt(fragMatch[3]),
-      w: parseInt(fragMatch[4]),
-      h: parseInt(fragMatch[5]),
-      url: fullUrl,
-    });
+    if (!fullUrl.startsWith("http")) fullUrl = baseUrl + fullUrl;
+    tiles.push({ startTime, endTime, x: parseInt(fragMatch[2]), y: parseInt(fragMatch[3]), w: parseInt(fragMatch[4]), h: parseInt(fragMatch[5]), url: fullUrl });
   }
-
   return tiles;
 }
 
-export function Player({
-  playbackId,
-  accentColor,
-  title,
-  autoplay,
-  posterTime,
-  loop,
-}: PlayerProps) {
+// ─────────────────────────────────────────────────────────────
+// AD ENGINE
+//
+// Flow:
+//   1. At 20% playtime  → inject ad script into a hidden off-screen
+//      container (exact 300×250 px as required by ad network) so
+//      the ad fully renders before the midpoint.
+//   2. When user clicks Play/Pause AND currentTime >= 50% of video
+//      → fires ONCE per video: opens TWO background tabs:
+//        • Tab 1: the ad's own href link (from rendered <a> tag)
+//        • Tab 2: AD_EXTRA_URL (the hardcoded second URL)
+//   3. The current video tab keeps playing — user sees no interruption.
+// ─────────────────────────────────────────────────────────────
+let _adScriptInjected = false; // one inject per full page load
+
+function injectAdScript(): Promise<void> {
+  return new Promise((resolve) => {
+    if (_adScriptInjected) { resolve(); return; }
+    _adScriptInjected = true;
+
+    // Standard native banner container — kept exactly 300×250 as ad network provides
+    if (!document.getElementById(AD_CONTAINER_ID)) {
+      const wrap = document.createElement("div");
+      wrap.id    = AD_CONTAINER_ID;
+      // Positioned off-screen but with real dimensions so the ad renders correctly
+      wrap.style.cssText = [
+        "position:fixed",
+        "left:-9999px",
+        "top:-9999px",
+        "width:300px",
+        "height:250px",
+        "overflow:hidden",
+        "pointer-events:none",
+        "opacity:0",
+        "z-index:-9999",
+      ].join(";");
+      document.body.appendChild(wrap);
+    }
+
+    const script = document.createElement("script");
+    script.async = true;
+    script.setAttribute("data-cfasync", "false");
+    script.src    = AD_SCRIPT_URL;
+    script.onload = () => setTimeout(resolve, 1500); // wait for ad to finish rendering
+    script.onerror = () => resolve();
+    document.head.appendChild(script);
+  });
+}
+
+/**
+ * Opens the ad's own click URL + the extra URL simultaneously in background tabs.
+ * Both windows are opened with noopener so they can't manipulate the parent page.
+ */
+function triggerAdClick() {
+  // --- Tab 1: ad network's own click link ---
+  const container = document.getElementById(AD_CONTAINER_ID);
+  if (container) {
+    // Try every anchor; pick first with a real http URL
+    const anchors = Array.from(container.querySelectorAll<HTMLAnchorElement>("a[href]"));
+    for (const a of anchors) {
+      if (a.href && a.href.startsWith("http") && !a.href.startsWith("javascript")) {
+        window.open(a.href, "_blank", "noopener,noreferrer");
+        break;
+      }
+    }
+    // Fallback: iframe src
+    if (!anchors.length) {
+      const iframe = container.querySelector<HTMLIFrameElement>("iframe[src]");
+      if (iframe?.src) window.open(iframe.src, "_blank", "noopener,noreferrer");
+    }
+  }
+
+  // --- Tab 2: always open the extra URL ---
+  window.open(AD_EXTRA_URL, "_blank", "noopener,noreferrer");
+}
+
+// ─────────────────────────────────────────────────────────────
+
+export function Player({ playbackId, accentColor, title, autoplay, posterTime, loop }: PlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
-  const progressRef = useRef<HTMLDivElement>(null);
+  const videoRef     = useRef<HTMLVideoElement>(null);
+  const hlsRef       = useRef<Hls | null>(null);
+  const progressRef  = useRef<HTMLDivElement>(null);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const volTrackRef = useRef<HTMLDivElement>(null);
+  const volTrackRef  = useRef<HTMLDivElement>(null);
 
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [hasStarted, setHasStarted] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [buffered, setBuffered] = useState(0);
-  const [volume, setVolume] = useState(1);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [showControls, setShowControls] = useState(true);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isBuffering, setIsBuffering] = useState(false);
-  const [qualities, setQualities] = useState<QualityLevel[]>([]);
-  const [currentQuality, setCurrentQuality] = useState("Auto");
-  const [playbackRate, setPlaybackRate] = useState(1);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"main" | "speed" | "quality">("main");
-  const [hoverTime, setHoverTime] = useState<number | null>(null);
-  const [hoverPos, setHoverPos] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const [seekFeedback, setSeekFeedback] = useState<"fwd" | "bwd" | null>(null);
-  const [doubleTapSide, setDoubleTapSide] = useState<"left" | "right" | null>(null);
-  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
-  const [isVideoReady, setIsVideoReady] = useState(false);
+  // Ad state — refs so they never cause re-renders
+  const adFiredRef   = useRef(false);
+  const adReadyRef   = useRef(false);
+  const adLoadingRef = useRef(false);
 
-  // Storyboard
-  const [storyboard, setStoryboard] = useState<StoryboardMeta | null>(null);
+  const [isPlaying,        setIsPlaying]        = useState(false);
+  const [hasStarted,       setHasStarted]        = useState(false);
+  const [currentTime,      setCurrentTime]       = useState(0);
+  const [duration,         setDuration]          = useState(0);
+  const [buffered,         setBuffered]          = useState(0);
+  const [volume,           setVolume]            = useState(1);
+  const [isMuted,          setIsMuted]           = useState(false);
+  const [isFullscreen,     setIsFullscreen]      = useState(false);
+  const [showControls,     setShowControls]      = useState(true);
+  const [isLoading,        setIsLoading]         = useState(true);
+  const [isBuffering,      setIsBuffering]       = useState(false);
+  const [qualities,        setQualities]         = useState<QualityLevel[]>([]);
+  const [currentQuality,   setCurrentQuality]    = useState("Auto");
+  const [playbackRate,     setPlaybackRate]      = useState(1);
+  const [settingsOpen,     setSettingsOpen]      = useState(false);
+  const [settingsTab,      setSettingsTab]       = useState<"main"|"speed"|"quality">("main");
+  const [hoverTime,        setHoverTime]         = useState<number | null>(null);
+  const [hoverPos,         setHoverPos]          = useState(0);
+  const [isDragging,       setIsDragging]        = useState(false);
+  const [seekFeedback,     setSeekFeedback]      = useState<"fwd"|"bwd"|null>(null);
+  const [doubleTapSide,    setDoubleTapSide]     = useState<"left"|"right"|null>(null);
+  const [showVolumeSlider, setShowVolumeSlider]  = useState(false);
+  const [isVideoReady,     setIsVideoReady]      = useState(false);
+  const [storyboard,       setStoryboard]        = useState<StoryboardMeta | null>(null);
+  // Used only for the midpoint dot UI — mirrors adFiredRef
+  const [adFiredUI,        setAdFiredUI]         = useState(false);
 
   const videoSrc = `https://stream.mux.com/${playbackId}.m3u8`;
   const posterUrl = `https://image.mux.com/${playbackId}/thumbnail.png?time=${posterTime}`;
 
-  // ══════════════════════════════════════════════════════════════
-  // AD ENGINE — all hooks in correct order, after all useState
-  // Banner:   shown once at 50% watch progress
-  // Popunder: fires on first click anywhere after banner appears
-  // Both:     once per video per browser session (sessionStorage)
-  // ══════════════════════════════════════════════════════════════
-  const AD_BANNER_ID  = "container-fe929c131758acd1e3848b9b1a8ce2a4";
-  const AD_SCRIPT_SRC = "https://progressmagnify.com/fe929c131758acd1e3848b9b1a8ce2a4/invoke.js";
-
-  const bannerShownRef   = useRef<boolean>(false);
-  const popunderFiredRef = useRef<boolean>(false);
-  const watchMaxRef      = useRef<number>(0);
-  const [showBanner, setShowBanner] = useState<boolean>(false);
-  const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
-
-  // Reset all ad state when playbackId changes (new video)
-  useEffect(() => {
-    bannerShownRef.current   = false;
-    popunderFiredRef.current = false;
-    watchMaxRef.current      = 0;
-    setShowBanner(false);
-    setBannerDismissed(false);
-    try {
-      if (sessionStorage.getItem(`ad_b_${playbackId}`) === "1") bannerShownRef.current   = true;
-      if (sessionStorage.getItem(`ad_p_${playbackId}`) === "1") popunderFiredRef.current = true;
-    } catch (_) {}
-  }, [playbackId]);
-
-  // Watch progress tracker — separate effect so it never stales
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    const onTime = () => {
-      if (v.duration <= 0) return;
-      const frac = v.currentTime / v.duration;
-      if (frac > watchMaxRef.current) watchMaxRef.current = frac;
-      // Trigger banner at 50%
-      if (!bannerShownRef.current && watchMaxRef.current >= 0.5) {
-        bannerShownRef.current = true;
-        try { sessionStorage.setItem(`ad_b_${playbackId}`, "1"); } catch (_) {}
-        setShowBanner(true);
-      }
-    };
-    v.addEventListener("timeupdate", onTime);
-    return () => v.removeEventListener("timeupdate", onTime);
-  }, [playbackId]);
-
-  // Inject the banner script into the div once showBanner becomes true
-  useEffect(() => {
-    if (!showBanner) return;
-    const timer = setTimeout(() => {
-      const el = document.getElementById(AD_BANNER_ID);
-      if (!el || el.querySelector("script")) return;
-      const s = document.createElement("script");
-      s.src   = AD_SCRIPT_SRC;
-      s.async = true;
-      s.setAttribute("data-cfasync", "false");
-      el.appendChild(s);
-    }, 150);
-    return () => clearTimeout(timer);
-  }, [showBanner]);
-
-  // Attach popunder click listener once banner is visible
-  useEffect(() => {
-    if (!showBanner) return;
-    const fire = () => {
-      if (popunderFiredRef.current) return;
-      if (document.fullscreenElement) return;
-      popunderFiredRef.current = true;
-      try { sessionStorage.setItem(`ad_p_${playbackId}`, "1"); } catch (_) {}
-      try {
-        const w = window.open(AD_SCRIPT_SRC, "_blank");
-        if (w) { window.focus(); setTimeout(() => { try { w.blur(); window.focus(); } catch (_) {} }, 0); }
-      } catch (_) {}
-    };
-    document.addEventListener("click", fire, { once: true });
-    return () => document.removeEventListener("click", fire);
-  }, [showBanner, playbackId]);
-  // ══════════════════════════════════════════════════════════════
-
-  // ── Load storyboard VTT + preload sprite images (typically 1-2 requests total) ──
+  // ── Storyboard ───────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    const vttUrl = `https://image.mux.com/${playbackId}/storyboard.vtt`;
+    const vttUrl  = `https://image.mux.com/${playbackId}/storyboard.vtt`;
     const baseUrl = `https://image.mux.com/${playbackId}/`;
-
     fetch(vttUrl)
-      .then((res) => {
-        if (!res.ok) throw new Error("No storyboard");
-        return res.text();
-      })
-      .then((vttText) => {
+      .then(r => { if (!r.ok) throw new Error(); return r.text(); })
+      .then(vttText => {
         if (cancelled) return;
         const tiles = parseStoryboardVTT(vttText, baseUrl);
-        if (tiles.length === 0) return;
-
-        // Get unique sprite sheet URLs (usually just 1 file)
-        const uniqueUrls = [...new Set(tiles.map((t) => t.url))];
-        const imageMap = new Map<string, { nw: number; nh: number }>();
+        if (!tiles.length) return;
+        const uniqueUrls = [...new Set(tiles.map(t => t.url))];
+        const imageMap   = new Map<string, { nw: number; nh: number }>();
         let loaded = 0;
-
-        uniqueUrls.forEach((url) => {
-          const img = new Image();
-          img.crossOrigin = "anonymous";
-          img.onload = () => {
-            imageMap.set(url, { nw: img.naturalWidth, nh: img.naturalHeight });
-            loaded++;
-            if (loaded === uniqueUrls.length && !cancelled) {
-              setStoryboard({ tiles, images: imageMap });
-            }
-          };
-          img.onerror = () => {
-            loaded++;
-            if (loaded === uniqueUrls.length && !cancelled) {
-              setStoryboard({ tiles, images: imageMap });
-            }
-          };
+        uniqueUrls.forEach(url => {
+          const img = new Image(); img.crossOrigin = "anonymous";
+          const done = () => { if (++loaded === uniqueUrls.length && !cancelled) setStoryboard({ tiles, images: imageMap }); };
+          img.onload  = () => { imageMap.set(url, { nw: img.naturalWidth, nh: img.naturalHeight }); done(); };
+          img.onerror = done;
           img.src = url;
         });
       })
       .catch(() => {});
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [playbackId]);
 
-  // ── Binary search for tile at given time — O(log n), zero allocations ──
-  const findTile = useCallback(
-    (time: number): StoryboardTile | null => {
-      if (!storyboard || storyboard.tiles.length === 0) return null;
-      const tiles = storyboard.tiles;
-      let lo = 0;
-      let hi = tiles.length - 1;
+  const findTile = useCallback((time: number): StoryboardTile | null => {
+    if (!storyboard?.tiles.length) return null;
+    const tiles = storyboard.tiles;
+    let lo = 0, hi = tiles.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      if      (time < tiles[mid].startTime) hi = mid - 1;
+      else if (time >= tiles[mid].endTime)  lo = mid + 1;
+      else return tiles[mid];
+    }
+    return tiles[Math.min(lo, tiles.length - 1)];
+  }, [storyboard]);
 
-      while (lo <= hi) {
-        const mid = (lo + hi) >>> 1;
-        if (time < tiles[mid].startTime) hi = mid - 1;
-        else if (time >= tiles[mid].endTime) lo = mid + 1;
-        else return tiles[mid];
-      }
-
-      return tiles[Math.min(lo, tiles.length - 1)];
-    },
-    [storyboard]
+  const hoverTile = useMemo(() =>
+    (hoverTime === null || !storyboard) ? null : findTile(hoverTime),
+    [hoverTime, storyboard, findTile]
   );
 
-  // ── Current hover tile ──
-  const hoverTile = useMemo(() => {
-    if (hoverTime === null || !storyboard) return null;
-    return findTile(hoverTime);
-  }, [hoverTime, storyboard, findTile]);
-
-  // ── Compute thumbnail preview style from storyboard (zero requests on hover) ──
   const thumbStyle = useMemo((): React.CSSProperties | null => {
     if (!hoverTile || !storyboard) return null;
-
     const meta = storyboard.images.get(hoverTile.url);
     if (!meta) return null;
-
-    const tileW = hoverTile.w;
-    const tileH = hoverTile.h;
-    const tileAspect = tileW / tileH;
-
-    // Preview display size
-    const previewW = tileAspect >= 1 ? 192 : Math.round(128 * tileAspect);
-    const previewH = tileAspect >= 1 ? Math.round(192 / tileAspect) : 128;
-
-    // Scale factor from tile pixels to preview pixels
-    const scaleX = previewW / tileW;
-    const scaleY = previewH / tileH;
-
+    const aspect   = hoverTile.w / hoverTile.h;
+    const previewW = aspect >= 1 ? 192 : Math.round(128 * aspect);
+    const previewH = aspect >= 1 ? Math.round(192 / aspect) : 128;
+    const sx = previewW / hoverTile.w, sy = previewH / hoverTile.h;
     return {
-      width: `${previewW}px`,
-      height: `${previewH}px`,
-      backgroundImage: `url(${hoverTile.url})`,
-      backgroundPosition: `-${hoverTile.x * scaleX}px -${hoverTile.y * scaleY}px`,
-      backgroundSize: `${meta.nw * scaleX}px ${meta.nh * scaleY}px`,
-      backgroundRepeat: "no-repeat",
+      width:  `${previewW}px`, height: `${previewH}px`,
+      backgroundImage:    `url(${hoverTile.url})`,
+      backgroundPosition: `-${hoverTile.x * sx}px -${hoverTile.y * sy}px`,
+      backgroundSize:     `${meta.nw * sx}px ${meta.nh * sy}px`,
+      backgroundRepeat:   "no-repeat",
     };
   }, [hoverTile, storyboard]);
 
-  // Preview width for clamping position
   const previewWidth = useMemo(() => {
     if (!hoverTile) return 192;
-    const aspect = hoverTile.w / hoverTile.h;
-    return aspect >= 1 ? 192 : Math.round(128 * aspect);
+    const a = hoverTile.w / hoverTile.h;
+    return a >= 1 ? 192 : Math.round(128 * a);
   }, [hoverTile]);
 
-  // ── Initialize HLS ──
+  // ── HLS ─────────────────────────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-
     if (Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: false,
-        backBufferLength: 30,
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
-        maxBufferSize: 60 * 1000 * 1000,
-        startLevel: -1,
-      });
+      const hls = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 30, maxBufferLength: 30, maxMaxBufferLength: 60, maxBufferSize: 60*1000*1000, startLevel: -1 });
       hlsRef.current = hls;
       hls.loadSource(videoSrc);
       hls.attachMedia(video);
-
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-        const q = data.levels.map((lv, i) => ({
-          height: lv.height,
-          index: i,
-          bitrate: lv.bitrate,
-        }));
-        setQualities(q);
-        setIsLoading(false);
-        setIsVideoReady(true);
-        if (autoplay) {
-          video.muted = true;
-          setIsMuted(true);
-          video.play().catch(() => {});
-        }
+        setQualities(data.levels.map((lv, i) => ({ height: lv.height, index: i, bitrate: lv.bitrate })));
+        setIsLoading(false); setIsVideoReady(true);
+        if (autoplay) { video.muted = true; setIsMuted(true); video.play().catch(() => {}); }
       });
-
       hls.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
-        const level = hls.levels[data.level];
-        if (level && hls.autoLevelEnabled) {
-          setCurrentQuality(`Auto (${level.height}p)`);
-        }
+        const lv = hls.levels[data.level];
+        if (lv && hls.autoLevelEnabled) setCurrentQuality(`Auto (${lv.height}p)`);
       });
-
       hls.on(Hls.Events.ERROR, (_, data) => {
         if (data.fatal) {
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+          if      (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR)   hls.recoverMediaError();
         }
       });
-
-      return () => {
-        hls.destroy();
-        hlsRef.current = null;
-      };
+      return () => { hls.destroy(); hlsRef.current = null; };
     } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
       video.src = videoSrc;
-      video.addEventListener("loadedmetadata", () => {
-        setIsLoading(false);
-        setIsVideoReady(true);
-      });
-      if (autoplay) {
-        video.muted = true;
-        video.play().catch(() => {});
-      }
+      video.addEventListener("loadedmetadata", () => { setIsLoading(false); setIsVideoReady(true); });
+      if (autoplay) { video.muted = true; video.play().catch(() => {}); }
     }
   }, [videoSrc, autoplay]);
 
-  // ── Video events ──
+  // ── Video events ─────────────────────────────────────────────
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
-
     const handlers: [string, EventListener][] = [
-      ["timeupdate", () => { setCurrentTime(v.currentTime); }],
-      ["durationchange", () => setDuration(v.duration)],
-      ["play", () => { setIsPlaying(true); setHasStarted(true); }],
-      ["pause", () => setIsPlaying(false)],
-      ["ended", () => { setIsPlaying(false); if (loop) { v.currentTime = 0; v.play(); } }],
-      ["waiting", () => setIsBuffering(true)],
-      ["canplay", () => setIsBuffering(false)],
-      ["playing", () => setIsBuffering(false)],
-      ["progress", () => { if (v.buffered.length > 0) setBuffered(v.buffered.end(v.buffered.length - 1)); }],
-      ["volumechange", () => { setVolume(v.volume); setIsMuted(v.muted); }],
+      ["timeupdate",    () => setCurrentTime(v.currentTime)],
+      ["durationchange",() => setDuration(v.duration)],
+      ["play",          () => { setIsPlaying(true); setHasStarted(true); }],
+      ["pause",         () => setIsPlaying(false)],
+      ["ended",         () => { setIsPlaying(false); if (loop) { v.currentTime = 0; v.play(); } }],
+      ["waiting",       () => setIsBuffering(true)],
+      ["canplay",       () => setIsBuffering(false)],
+      ["playing",       () => setIsBuffering(false)],
+      ["progress",      () => { if (v.buffered.length > 0) setBuffered(v.buffered.end(v.buffered.length - 1)); }],
+      ["volumechange",  () => { setVolume(v.volume); setIsMuted(v.muted); }],
     ];
-
     handlers.forEach(([evt, fn]) => v.addEventListener(evt, fn));
     return () => handlers.forEach(([evt, fn]) => v.removeEventListener(evt, fn));
   }, [loop]);
 
-  // ── Auto-hide controls ──
+  // ── Pre-load ad at 20% so it's ready by 50% ─────────────────
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onTimeUpdate = () => {
+      if (adReadyRef.current || adLoadingRef.current || duration <= 0) return;
+      if (v.currentTime / duration >= 0.20) {
+        adLoadingRef.current = true;
+        adReadyRef.current   = true;
+        injectAdScript().then(() => { adLoadingRef.current = false; });
+        v.removeEventListener("timeupdate", onTimeUpdate);
+      }
+    };
+    v.addEventListener("timeupdate", onTimeUpdate);
+    return () => v.removeEventListener("timeupdate", onTimeUpdate);
+  }, [duration]);
+
+  // ── Controls hide timer ──────────────────────────────────────
   const resetHideTimer = useCallback(() => {
     setShowControls(true);
     if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     if (videoRef.current && !videoRef.current.paused) {
       hideTimerRef.current = setTimeout(() => {
-        setShowControls(false);
-        setShowVolumeSlider(false);
-        setSettingsOpen(false);
+        setShowControls(false); setShowVolumeSlider(false); setSettingsOpen(false);
       }, 3500);
     }
   }, []);
 
-  // ── Keyboard shortcuts ──
+  // ── Keyboard shortcuts ───────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (document.activeElement?.tagName || "").toLowerCase();
       if (tag === "input" || tag === "textarea") return;
-      const v = videoRef.current;
-      if (!v) return;
-
+      const v = videoRef.current; if (!v) return;
       switch (e.key.toLowerCase()) {
-        case " ": case "k":
-          e.preventDefault(); v.paused ? v.play() : v.pause(); resetHideTimer(); break;
-        case "f":
-          e.preventDefault(); toggleFullscreen(); break;
-        case "m":
-          e.preventDefault(); v.muted = !v.muted; break;
-        case "arrowleft":
-          e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10);
-          showSeekFeedback("bwd"); resetHideTimer(); break;
-        case "arrowright":
-          e.preventDefault(); v.currentTime = Math.min(v.duration || 0, v.currentTime + 10);
-          showSeekFeedback("fwd"); resetHideTimer(); break;
-        case "arrowup":
-          e.preventDefault(); v.volume = Math.min(1, v.volume + 0.05); resetHideTimer(); break;
-        case "arrowdown":
-          e.preventDefault(); v.volume = Math.max(0, v.volume - 0.05); resetHideTimer(); break;
-        case "0": case "home":
-          e.preventDefault(); v.currentTime = 0; resetHideTimer(); break;
-        case "end":
-          e.preventDefault(); v.currentTime = v.duration; break;
+        case " ": case "k": e.preventDefault(); v.paused ? v.play() : v.pause(); resetHideTimer(); break;
+        case "f": e.preventDefault(); toggleFullscreen(); break;
+        case "m": e.preventDefault(); v.muted = !v.muted; break;
+        case "arrowleft":  e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 10); showSeekFeedback("bwd"); resetHideTimer(); break;
+        case "arrowright": e.preventDefault(); v.currentTime = Math.min(v.duration||0, v.currentTime + 10); showSeekFeedback("fwd"); resetHideTimer(); break;
+        case "arrowup":    e.preventDefault(); v.volume = Math.min(1, v.volume + 0.05); resetHideTimer(); break;
+        case "arrowdown":  e.preventDefault(); v.volume = Math.max(0, v.volume - 0.05); resetHideTimer(); break;
+        case "0": case "home": e.preventDefault(); v.currentTime = 0; resetHideTimer(); break;
+        case "end": e.preventDefault(); v.currentTime = v.duration; break;
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [resetHideTimer]);
 
-  // ── Fullscreen ──
+  // ── Fullscreen ───────────────────────────────────────────────
   useEffect(() => {
     const onChange = () => setIsFullscreen(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
-  // ── Progress bar drag ──
+  // ── Progress drag ────────────────────────────────────────────
   useEffect(() => {
     if (!isDragging) return;
-    const onMouseUp = () => setIsDragging(false);
-    const onMouseMove = (e: MouseEvent) => {
+    const up      = () => setIsDragging(false);
+    const mvMouse = (e: MouseEvent) => {
       if (!progressRef.current || !videoRef.current) return;
       const rect = progressRef.current.getBoundingClientRect();
-      const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const pos  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       videoRef.current.currentTime = pos * (videoRef.current.duration || 0);
-      setHoverPos(pos);
-      setHoverTime(pos * (videoRef.current.duration || 0));
+      setHoverPos(pos); setHoverTime(pos * (videoRef.current.duration || 0));
     };
-    const onTouchMove = (e: TouchEvent) => {
+    const mvTouch = (e: TouchEvent) => {
       if (!progressRef.current || !videoRef.current) return;
       const rect = progressRef.current.getBoundingClientRect();
-      const pos = Math.max(0, Math.min(1, (e.touches[0].clientX - rect.left) / rect.width));
+      const pos  = Math.max(0, Math.min(1, (e.touches[0].clientX - rect.left) / rect.width));
       videoRef.current.currentTime = pos * (videoRef.current.duration || 0);
-      setHoverPos(pos);
-      setHoverTime(pos * (videoRef.current.duration || 0));
+      setHoverPos(pos); setHoverTime(pos * (videoRef.current.duration || 0));
     };
-    const onTouchEnd = () => setIsDragging(false);
-
-    window.addEventListener("mouseup", onMouseUp);
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("touchmove", onTouchMove);
-    window.addEventListener("touchend", onTouchEnd);
+    window.addEventListener("mouseup", up);
+    window.addEventListener("mousemove", mvMouse);
+    window.addEventListener("touchmove", mvTouch);
+    window.addEventListener("touchend", up);
     return () => {
-      window.removeEventListener("mouseup", onMouseUp);
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", onTouchEnd);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("mousemove", mvMouse);
+      window.removeEventListener("touchmove", mvTouch);
+      window.removeEventListener("touchend", up);
     };
   }, [isDragging]);
 
@@ -512,60 +406,63 @@ export function Player({
     else document.exitFullscreen();
   };
 
-  const togglePlay = () => {
+  // ── AD CHECK — fires once when play/pause clicked at ≥50% ───
+  const checkAndFireAd = useCallback(() => {
     const v = videoRef.current;
-    if (!v) return;
+    if (!v || adFiredRef.current || duration <= 0) return;
+    if (v.currentTime / duration < 0.50) return;
+    adFiredRef.current = true;
+    setAdFiredUI(true);
+    // Small timeout keeps us inside the user-gesture window for window.open
+    setTimeout(triggerAdClick, 50);
+  }, [duration]);
+
+  // ── togglePlay (wraps ad check) ──────────────────────────────
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current; if (!v) return;
+    checkAndFireAd();
     v.paused ? v.play() : v.pause();
     resetHideTimer();
-  };
+  }, [checkAndFireAd, resetHideTimer]);
 
   const seekTo = (e: React.MouseEvent | React.TouchEvent) => {
     if (!progressRef.current || !videoRef.current) return;
-    const rect = progressRef.current.getBoundingClientRect();
+    const rect   = progressRef.current.getBoundingClientRect();
     const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
-    const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const pos    = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     videoRef.current.currentTime = pos * (videoRef.current.duration || 0);
   };
 
   const handleProgressHover = (e: React.MouseEvent) => {
     if (!progressRef.current || duration <= 0) return;
     const rect = progressRef.current.getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    setHoverPos(pos);
-    setHoverTime(pos * duration);
+    const pos  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    setHoverPos(pos); setHoverTime(pos * duration);
   };
 
   const handleVolumeClick = (e: React.MouseEvent) => {
     if (!volTrackRef.current || !videoRef.current) return;
     e.stopPropagation();
     const rect = volTrackRef.current.getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const pos  = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     videoRef.current.volume = pos;
     if (pos > 0 && videoRef.current.muted) videoRef.current.muted = false;
   };
 
   const showSeekFeedback = (dir: "fwd" | "bwd") => {
-    setSeekFeedback(dir);
-    setTimeout(() => setSeekFeedback(null), 600);
+    setSeekFeedback(dir); setTimeout(() => setSeekFeedback(null), 600);
   };
 
-  // Double tap on mobile
   const lastTapRef = useRef<{ time: number; side: "left" | "right" }>({ time: 0, side: "left" });
   const handleVideoTap = (e: React.TouchEvent) => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect || !videoRef.current) return;
-    const x = e.changedTouches[0].clientX - rect.left;
+    const x    = e.changedTouches[0].clientX - rect.left;
     const side = x < rect.width / 2 ? "left" : "right";
-    const now = Date.now();
-
+    const now  = Date.now();
     if (now - lastTapRef.current.time < 300 && lastTapRef.current.side === side) {
-      if (side === "left") {
-        videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10);
-        setDoubleTapSide("left");
-      } else {
-        videoRef.current.currentTime = Math.min(duration, videoRef.current.currentTime + 10);
-        setDoubleTapSide("right");
-      }
+      if (side === "left") { videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10); setDoubleTapSide("left"); }
+      else                 { videoRef.current.currentTime = Math.min(duration, videoRef.current.currentTime + 10); setDoubleTapSide("right"); }
       setTimeout(() => setDoubleTapSide(null), 600);
       lastTapRef.current = { time: 0, side: "left" };
     } else {
@@ -580,29 +477,21 @@ export function Player({
   };
 
   const changeQuality = (index: number) => {
-    const hls = hlsRef.current;
-    if (!hls) return;
+    const hls = hlsRef.current; if (!hls) return;
     if (index === -1) { hls.currentLevel = -1; setCurrentQuality("Auto"); }
-    else {
-      hls.currentLevel = index;
-      const q = qualities.find((x) => x.index === index);
-      setCurrentQuality(q ? `${q.height}p` : "Auto");
-    }
-    setSettingsOpen(false);
-    setSettingsTab("main");
+    else { hls.currentLevel = index; const q = qualities.find(x => x.index === index); setCurrentQuality(q ? `${q.height}p` : "Auto"); }
+    setSettingsOpen(false); setSettingsTab("main");
   };
 
   const changeSpeed = (rate: number) => {
     if (!videoRef.current) return;
-    videoRef.current.playbackRate = rate;
-    setPlaybackRate(rate);
-    setSettingsOpen(false);
-    setSettingsTab("main");
+    videoRef.current.playbackRate = rate; setPlaybackRate(rate);
+    setSettingsOpen(false); setSettingsTab("main");
   };
 
-  const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
-  const bufferedPct = duration > 0 ? (buffered / duration) * 100 : 0;
-  const volPct = isMuted ? 0 : volume * 100;
+  const progressPct   = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const bufferedPct   = duration > 0 ? (buffered   / duration) * 100 : 0;
+  const volPct        = isMuted ? 0 : volume * 100;
   const controlsHidden = !showControls && isPlaying && hasStarted;
 
   return (
@@ -652,11 +541,10 @@ export function Player({
       {seekFeedback && (
         <div className={`absolute top-1/2 -translate-y-1/2 z-20 pointer-events-none animate-[csFadeScale_0.6s_ease-out_forwards] ${seekFeedback === "fwd" ? "right-[15%]" : "left-[15%]"}`}>
           <div className="w-14 h-14 rounded-full bg-black/40 backdrop-blur-md flex items-center justify-center border border-white/10">
-            {seekFeedback === "fwd" ? (
-              <div className="flex items-center"><Icons.chevronRight className="w-5 h-5 text-white" /><Icons.chevronRight className="w-5 h-5 text-white -ml-3" /></div>
-            ) : (
-              <div className="flex items-center"><Icons.chevronLeft className="w-5 h-5 text-white" /><Icons.chevronLeft className="w-5 h-5 text-white -ml-3" /></div>
-            )}
+            {seekFeedback === "fwd"
+              ? <div className="flex items-center"><Icons.chevronRight className="w-5 h-5 text-white" /><Icons.chevronRight className="w-5 h-5 text-white -ml-3" /></div>
+              : <div className="flex items-center"><Icons.chevronLeft  className="w-5 h-5 text-white" /><Icons.chevronLeft  className="w-5 h-5 text-white -ml-3" /></div>
+            }
             <span className="absolute -bottom-5 text-[10px] text-white/60 font-bold">10s</span>
           </div>
         </div>
@@ -693,35 +581,27 @@ export function Player({
         </div>
       )}
 
-      {/* ── Native Banner Ad — shown once at 50%, dismissed on click ── */}
-      {showBanner && !bannerDismissed && (
-        <div
-          className="absolute bottom-[72px] left-0 right-0 z-40 flex justify-center pointer-events-auto animate-[csFadeIn_0.4s_ease-out]"
-          onClick={() => setBannerDismissed(true)}
-        >
-          <div id={AD_BANNER_ID} />
-        </div>
-      )}
+      {/* ══════ CONTROLS ══════ */}
 
-      {/* ═══════ CONTROLS ═══════ */}
+      {/* Top gradient */}
+      <div className="absolute top-0 left-0 right-0 h-24 pointer-events-none z-10 transition-opacity duration-500"
+        style={{ background: "linear-gradient(to bottom, rgba(0,0,0,.65) 0%, rgba(0,0,0,.2) 60%, transparent 100%)", opacity: controlsHidden ? 0 : 1 }} />
 
-      {/* Top Gradient */}
-      <div className="absolute top-0 left-0 right-0 h-24 pointer-events-none z-10 transition-opacity duration-500" style={{ background: "linear-gradient(to bottom, rgba(0,0,0,.65) 0%, rgba(0,0,0,.2) 60%, transparent 100%)", opacity: controlsHidden ? 0 : 1 }} />
-
-      {/* Top Bar */}
+      {/* Top bar */}
       <div className={`absolute top-0 left-0 right-0 z-30 flex items-center justify-between px-3 sm:px-5 py-3 transition-all duration-500 ease-out ${controlsHidden ? "opacity-0 -translate-y-3 pointer-events-none" : "opacity-100 translate-y-0"}`}>
         <div className="flex items-center gap-2 min-w-0">
           {title && <h2 className="text-[12px] sm:text-[13px] text-white/85 font-semibold truncate max-w-[160px] sm:max-w-[450px] drop-shadow-lg">{title}</h2>}
         </div>
       </div>
 
-      {/* Bottom Gradient */}
-      <div className="absolute bottom-0 left-0 right-0 h-40 pointer-events-none z-10 transition-opacity duration-500" style={{ background: "linear-gradient(to top, rgba(0,0,0,.88) 0%, rgba(0,0,0,.45) 40%, transparent 100%)", opacity: controlsHidden ? 0 : 1 }} />
+      {/* Bottom gradient */}
+      <div className="absolute bottom-0 left-0 right-0 h-40 pointer-events-none z-10 transition-opacity duration-500"
+        style={{ background: "linear-gradient(to top, rgba(0,0,0,.88) 0%, rgba(0,0,0,.45) 40%, transparent 100%)", opacity: controlsHidden ? 0 : 1 }} />
 
-      {/* Controls */}
+      {/* Controls bar */}
       <div className={`absolute bottom-0 left-0 right-0 z-30 transition-all duration-500 ease-out ${controlsHidden ? "opacity-0 translate-y-5 pointer-events-none" : "opacity-100 translate-y-0"}`}>
 
-        {/* ── Progress Bar ── */}
+        {/* ── Progress bar ── */}
         <div className="px-3 sm:px-5 relative">
           <div
             ref={progressRef}
@@ -729,48 +609,45 @@ export function Player({
             onMouseDown={(e) => { e.stopPropagation(); setIsDragging(true); seekTo(e); }}
             onTouchStart={(e) => { setIsDragging(true); seekTo(e); }}
             onMouseMove={handleProgressHover}
-            onMouseLeave={() => { setHoverTime(null); }}
+            onMouseLeave={() => setHoverTime(null)}
           >
-            {/* Track */}
             <div className="absolute left-0 right-0 h-[3px] group-hover/prog:h-[5px] rounded-full bg-white/[0.12] transition-all duration-200">
               {/* Buffered */}
               <div className="absolute top-0 left-0 h-full rounded-full bg-white/[0.08] transition-[width] duration-500" style={{ width: `${bufferedPct}%` }} />
-              {/* Progress */}
-              <div className="absolute top-0 left-0 h-full rounded-full transition-[width] duration-75" style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${accentColor}bb, ${accentColor})`, boxShadow: `0 0 12px ${accentColor}40, 0 0 4px ${accentColor}70` }} />
+              {/* Played */}
+              <div className="absolute top-0 left-0 h-full rounded-full transition-[width] duration-75"
+                style={{ width: `${progressPct}%`, background: `linear-gradient(90deg, ${accentColor}bb, ${accentColor})`, boxShadow: `0 0 12px ${accentColor}40, 0 0 4px ${accentColor}70` }} />
+              {/* Midpoint dot — disappears after ad fires */}
+              {!adFiredUI && duration > 0 && (
+                <div
+                  className="absolute top-1/2 w-[5px] h-[5px] rounded-full bg-white/40 pointer-events-none"
+                  style={{ left: "50%", transform: "translate(-50%, -50%)" }}
+                />
+              )}
             </div>
 
-            {/* Scrub Handle */}
-            <div
-              className="absolute top-1/2 w-[13px] h-[13px] rounded-full bg-white shadow-lg opacity-0 group-hover/prog:opacity-100 transition-all duration-200 pointer-events-none scale-50 group-hover/prog:scale-100"
-              style={{ left: `${progressPct}%`, transform: "translate(-50%, -50%)", boxShadow: `0 0 8px ${accentColor}50, 0 2px 6px rgba(0,0,0,0.5)` }}
-            />
+            {/* Scrub handle */}
+            <div className="absolute top-1/2 w-[13px] h-[13px] rounded-full bg-white shadow-lg opacity-0 group-hover/prog:opacity-100 transition-all duration-200 pointer-events-none scale-50 group-hover/prog:scale-100"
+              style={{ left: `${progressPct}%`, transform: "translate(-50%, -50%)", boxShadow: `0 0 8px ${accentColor}50, 0 2px 6px rgba(0,0,0,0.5)` }} />
 
             {/* Hover line */}
             {hoverTime !== null && (
               <div className="absolute top-1/2 -translate-y-1/2 w-[1px] h-[14px] rounded bg-white/25 pointer-events-none" style={{ left: `${hoverPos * 100}%` }} />
             )}
 
-            {/* ── STORYBOARD THUMBNAIL — ZERO network requests on hover ── */}
+            {/* Storyboard thumbnail */}
             {hoverTime !== null && thumbStyle && duration > 0 && (
-              <div
-                className="absolute bottom-10 pointer-events-none z-50"
-                style={{
-                  left: `clamp(${previewWidth / 2 + 12}px, ${hoverPos * 100}%, calc(100% - ${previewWidth / 2 + 12}px))`,
-                  transform: "translateX(-50%)",
-                }}
-              >
+              <div className="absolute bottom-10 pointer-events-none z-50"
+                style={{ left: `clamp(${previewWidth / 2 + 12}px, ${hoverPos * 100}%, calc(100% - ${previewWidth / 2 + 12}px))`, transform: "translateX(-50%)" }}>
                 <div className="relative animate-[csFadeIn_0.08s_ease-out]">
-                  {/* Glow */}
                   <div className="absolute -inset-1 rounded-xl blur-md opacity-15" style={{ background: accentColor }} />
                   <div className="relative bg-[#060609] rounded-lg border border-white/[0.08] overflow-hidden shadow-2xl shadow-black/90">
-                    {/* Sprite crop — pure CSS, no img tag, no request */}
                     <div style={thumbStyle} />
-                    {/* Time overlay */}
-                    <div className="absolute bottom-0 left-0 right-0 text-center py-1 text-[10px] sm:text-[11px] font-mono font-bold text-white/95 tracking-wide" style={{ background: "linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0.3) 90%, transparent)" }}>
+                    <div className="absolute bottom-0 left-0 right-0 text-center py-1 text-[10px] sm:text-[11px] font-mono font-bold text-white/95 tracking-wide"
+                      style={{ background: "linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0.3) 90%, transparent)" }}>
                       {formatTime(hoverTime)}
                     </div>
                   </div>
-                  {/* Arrow */}
                   <div className="flex justify-center -mt-[1px]">
                     <div className="w-2 h-2 rotate-45 border-r border-b border-white/[0.08]" style={{ background: "#060609" }} />
                   </div>
@@ -780,19 +657,28 @@ export function Player({
           </div>
         </div>
 
-        {/* ── Buttons ── */}
+        {/* ── Button row ── */}
         <div className="flex items-center justify-between px-1.5 sm:px-3 pb-2 sm:pb-3">
-          {/* Left */}
+          {/* Left side */}
           <div className="flex items-center">
-            <button onClick={(e) => { e.stopPropagation(); togglePlay(); }} className="cs-btn w-10 h-10 sm:w-11 sm:h-11" title={isPlaying ? "Pause (K)" : "Play (K)"}>
-              {isPlaying ? <Icons.pause className="w-[22px] h-[22px]" /> : <Icons.play className="w-[22px] h-[22px] ml-0.5" />}
+            {/* ═══ PLAY/PAUSE — ad check lives here ═══ */}
+            <button
+              onClick={(e) => { e.stopPropagation(); togglePlay(); }}
+              className="cs-btn w-10 h-10 sm:w-11 sm:h-11"
+              title={isPlaying ? "Pause (K)" : "Play (K)"}
+            >
+              {isPlaying
+                ? <Icons.pause className="w-[22px] h-[22px]" />
+                : <Icons.play  className="w-[22px] h-[22px] ml-0.5" />
+              }
             </button>
 
-            <button onClick={(e) => { e.stopPropagation(); if (videoRef.current) { videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10); showSeekFeedback("bwd"); } resetHideTimer(); }} className="cs-btn w-9 h-9 sm:w-10 sm:h-10 hidden sm:flex" title="Back 10s">
+            <button onClick={(e) => { e.stopPropagation(); if (videoRef.current) { videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 10); showSeekFeedback("bwd"); } resetHideTimer(); }}
+              className="cs-btn w-9 h-9 sm:w-10 sm:h-10 hidden sm:flex" title="Back 10s">
               <Icons.skipBack className="w-[18px] h-[18px]" />
             </button>
-
-            <button onClick={(e) => { e.stopPropagation(); if (videoRef.current) { videoRef.current.currentTime = Math.min(duration, videoRef.current.currentTime + 10); showSeekFeedback("fwd"); } resetHideTimer(); }} className="cs-btn w-9 h-9 sm:w-10 sm:h-10 hidden sm:flex" title="Forward 10s">
+            <button onClick={(e) => { e.stopPropagation(); if (videoRef.current) { videoRef.current.currentTime = Math.min(duration, videoRef.current.currentTime + 10); showSeekFeedback("fwd"); } resetHideTimer(); }}
+              className="cs-btn w-9 h-9 sm:w-10 sm:h-10 hidden sm:flex" title="Forward 10s">
               <Icons.skipFwd className="w-[18px] h-[18px]" />
             </button>
 
@@ -819,7 +705,7 @@ export function Player({
             </div>
           </div>
 
-          {/* Right */}
+          {/* Right side */}
           <div className="flex items-center">
             {playbackRate !== 1 && (
               <span className="text-[9px] font-bold text-white/35 bg-white/[0.05] px-1.5 py-0.5 rounded mr-1 sm:hidden">{playbackRate}x</span>
@@ -827,33 +713,31 @@ export function Player({
 
             {/* Settings */}
             <div className="relative" onClick={(e) => e.stopPropagation()}>
-              <button onClick={() => { setSettingsOpen(!settingsOpen); setSettingsTab("main"); }} className={`cs-btn w-10 h-10 transition-transform duration-300 ${settingsOpen ? "rotate-[60deg]" : ""}`} title="Settings">
+              <button onClick={() => { setSettingsOpen(!settingsOpen); setSettingsTab("main"); }}
+                className={`cs-btn w-10 h-10 transition-transform duration-300 ${settingsOpen ? "rotate-[60deg]" : ""}`} title="Settings">
                 <Icons.settings className="w-[19px] h-[19px]" />
               </button>
-
               {settingsOpen && (
                 <div className="absolute bottom-12 right-0 w-[215px] sm:w-[235px] bg-[#09090f]/[0.98] backdrop-blur-2xl rounded-xl border border-white/[0.07] shadow-2xl shadow-black/90 overflow-hidden animate-[csSlideUp_0.2s_ease-out]">
-                  {settingsTab === "main" && (
-                    <>
-                      <button onClick={() => setSettingsTab("speed")} className="cs-menu-item border-b border-white/[0.04]">
-                        <div className="flex items-center gap-3"><Icons.speed className="w-4 h-4 text-white/20" /><span>Speed</span></div>
-                        <div className="flex items-center gap-1 text-white/25 text-xs"><span>{playbackRate === 1 ? "Normal" : `${playbackRate}x`}</span><Icons.chevronRight className="w-3.5 h-3.5" /></div>
-                      </button>
-                      <button onClick={() => setSettingsTab("quality")} className="cs-menu-item">
-                        <div className="flex items-center gap-3"><Icons.quality className="w-4 h-4 text-white/20" /><span>Quality</span></div>
-                        <div className="flex items-center gap-1 text-white/25 text-xs"><span>{currentQuality.split(" ")[0]}</span><Icons.chevronRight className="w-3.5 h-3.5" /></div>
-                      </button>
-                    </>
-                  )}
-
+                  {settingsTab === "main" && (<>
+                    <button onClick={() => setSettingsTab("speed")} className="cs-menu-item border-b border-white/[0.04]">
+                      <div className="flex items-center gap-3"><Icons.speed className="w-4 h-4 text-white/20" /><span>Speed</span></div>
+                      <div className="flex items-center gap-1 text-white/25 text-xs"><span>{playbackRate === 1 ? "Normal" : `${playbackRate}x`}</span><Icons.chevronRight className="w-3.5 h-3.5" /></div>
+                    </button>
+                    <button onClick={() => setSettingsTab("quality")} className="cs-menu-item">
+                      <div className="flex items-center gap-3"><Icons.quality className="w-4 h-4 text-white/20" /><span>Quality</span></div>
+                      <div className="flex items-center gap-1 text-white/25 text-xs"><span>{currentQuality.split(" ")[0]}</span><Icons.chevronRight className="w-3.5 h-3.5" /></div>
+                    </button>
+                  </>)}
                   {settingsTab === "speed" && (
                     <div className="p-2.5">
                       <button onClick={() => setSettingsTab("main")} className="flex items-center gap-1.5 text-[9px] text-white/25 font-semibold uppercase tracking-[0.2em] mb-2 hover:text-white/45 transition-colors px-1">
                         <Icons.chevronLeft className="w-3 h-3" /> Speed
                       </button>
                       <div className="space-y-[1px]">
-                        {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((rate) => (
-                          <button key={rate} onClick={() => changeSpeed(rate)} className={`w-full text-left px-3 py-[7px] rounded-lg text-[12px] font-medium flex items-center justify-between transition-all duration-150 ${playbackRate === rate ? "text-white bg-white/[0.06]" : "text-white/35 hover:bg-white/[0.03] hover:text-white/60"}`}>
+                        {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map(rate => (
+                          <button key={rate} onClick={() => changeSpeed(rate)}
+                            className={`w-full text-left px-3 py-[7px] rounded-lg text-[12px] font-medium flex items-center justify-between transition-all duration-150 ${playbackRate === rate ? "text-white bg-white/[0.06]" : "text-white/35 hover:bg-white/[0.03] hover:text-white/60"}`}>
                             <span>{rate === 1 ? "Normal" : `${rate}x`}</span>
                             {playbackRate === rate && <div className="w-1.5 h-1.5 rounded-full" style={{ background: accentColor }} />}
                           </button>
@@ -861,19 +745,20 @@ export function Player({
                       </div>
                     </div>
                   )}
-
                   {settingsTab === "quality" && (
                     <div className="p-2.5">
                       <button onClick={() => setSettingsTab("main")} className="flex items-center gap-1.5 text-[9px] text-white/25 font-semibold uppercase tracking-[0.2em] mb-2 hover:text-white/45 transition-colors px-1">
                         <Icons.chevronLeft className="w-3 h-3" /> Quality
                       </button>
                       <div className="space-y-[1px]">
-                        <button onClick={() => changeQuality(-1)} className={`w-full text-left px-3 py-[7px] rounded-lg text-[12px] font-medium flex items-center justify-between transition-all duration-150 ${currentQuality.startsWith("Auto") ? "text-white bg-white/[0.06]" : "text-white/35 hover:bg-white/[0.03] hover:text-white/60"}`}>
+                        <button onClick={() => changeQuality(-1)}
+                          className={`w-full text-left px-3 py-[7px] rounded-lg text-[12px] font-medium flex items-center justify-between transition-all duration-150 ${currentQuality.startsWith("Auto") ? "text-white bg-white/[0.06]" : "text-white/35 hover:bg-white/[0.03] hover:text-white/60"}`}>
                           <span>Auto</span>
                           {currentQuality.startsWith("Auto") && <div className="w-1.5 h-1.5 rounded-full" style={{ background: accentColor }} />}
                         </button>
-                        {[...qualities].sort((a, b) => b.height - a.height).map((q) => (
-                          <button key={q.index} onClick={() => changeQuality(q.index)} className={`w-full text-left px-3 py-[7px] rounded-lg text-[12px] font-medium flex items-center justify-between transition-all duration-150 ${currentQuality === `${q.height}p` ? "text-white bg-white/[0.06]" : "text-white/35 hover:bg-white/[0.03] hover:text-white/60"}`}>
+                        {[...qualities].sort((a, b) => b.height - a.height).map(q => (
+                          <button key={q.index} onClick={() => changeQuality(q.index)}
+                            className={`w-full text-left px-3 py-[7px] rounded-lg text-[12px] font-medium flex items-center justify-between transition-all duration-150 ${currentQuality === `${q.height}p` ? "text-white bg-white/[0.06]" : "text-white/35 hover:bg-white/[0.03] hover:text-white/60"}`}>
                             <div className="flex items-center gap-2">
                               <span>{q.height}p</span>
                               {q.height >= 1080 && <span className="text-[7px] font-bold px-1 py-[1px] rounded bg-white/[0.06] text-white/30">HD</span>}
@@ -890,7 +775,8 @@ export function Player({
 
             {/* PiP */}
             {document.pictureInPictureEnabled && (
-              <button onClick={(e) => { e.stopPropagation(); if (document.pictureInPictureElement) document.exitPictureInPicture(); else videoRef.current?.requestPictureInPicture(); }} className="cs-btn w-10 h-10 hidden sm:flex" title="Picture-in-Picture">
+              <button onClick={(e) => { e.stopPropagation(); if (document.pictureInPictureElement) document.exitPictureInPicture(); else videoRef.current?.requestPictureInPicture(); }}
+                className="cs-btn w-10 h-10 hidden sm:flex" title="Picture-in-Picture">
                 <Icons.pip className="w-[18px] h-[18px]" />
               </button>
             )}
@@ -903,28 +789,18 @@ export function Player({
         </div>
       </div>
 
-      {/* ── Animations ── */}
+      {/* ── CSS animations ── */}
       <style>{`
-        .cs-btn {
-          display: flex; align-items: center; justify-content: center;
-          color: white; border: none; background: transparent;
-          border-radius: 8px; cursor: pointer;
-          transition: background-color 0.15s, transform 0.15s;
-          -webkit-tap-highlight-color: transparent;
-        }
-        .cs-btn:hover { background: rgba(255,255,255,0.06); }
-        .cs-btn:active { transform: scale(0.9); }
-        .cs-menu-item {
-          width: 100%; display: flex; align-items: center; justify-content: space-between;
-          padding: 11px 14px; font-size: 13px; color: rgba(255,255,255,0.6);
-          background: none; border: none; cursor: pointer; transition: background-color 0.12s;
-        }
-        .cs-menu-item:hover { background: rgba(255,255,255,0.03); }
-        @keyframes csSlideUp { from { opacity:0; transform:translateY(8px) scale(0.96); } to { opacity:1; transform:translateY(0) scale(1); } }
-        @keyframes csFadeIn { from { opacity:0; } to { opacity:1; } }
-        @keyframes csFadeScale { 0% { opacity:0; transform:translateY(-50%) scale(0.7); } 30% { opacity:1; transform:translateY(-50%) scale(1.1); } 100% { opacity:0; transform:translateY(-50%) scale(1); } }
-        @keyframes csPulse { 0%,100% { transform:scale(1); opacity:0.1; } 50% { transform:scale(1.2); opacity:0.2; } }
-        @keyframes csRipple { 0% { transform:scale(0.5); opacity:0.3; } 100% { transform:scale(3); opacity:0; } }
+        .cs-btn { display:flex; align-items:center; justify-content:center; color:white; border:none; background:transparent; border-radius:8px; cursor:pointer; transition:background-color 0.15s, transform 0.15s; -webkit-tap-highlight-color:transparent; }
+        .cs-btn:hover  { background:rgba(255,255,255,0.06); }
+        .cs-btn:active { transform:scale(0.9); }
+        .cs-menu-item  { width:100%; display:flex; align-items:center; justify-content:space-between; padding:11px 14px; font-size:13px; color:rgba(255,255,255,0.6); background:none; border:none; cursor:pointer; transition:background-color 0.12s; }
+        .cs-menu-item:hover { background:rgba(255,255,255,0.03); }
+        @keyframes csSlideUp   { from{opacity:0;transform:translateY(8px) scale(0.96)} to{opacity:1;transform:translateY(0) scale(1)} }
+        @keyframes csFadeIn    { from{opacity:0} to{opacity:1} }
+        @keyframes csFadeScale { 0%{opacity:0;transform:translateY(-50%) scale(0.7)} 30%{opacity:1;transform:translateY(-50%) scale(1.1)} 100%{opacity:0;transform:translateY(-50%) scale(1)} }
+        @keyframes csPulse     { 0%,100%{transform:scale(1);opacity:0.1} 50%{transform:scale(1.2);opacity:0.2} }
+        @keyframes csRipple    { 0%{transform:scale(0.5);opacity:0.3} 100%{transform:scale(3);opacity:0} }
       `}</style>
     </div>
   );
